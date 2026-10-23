@@ -203,6 +203,14 @@ the guide.
      anything.
   3. A fixed domain the filter allows: named tunnel (`OMNI2API_TUNNEL_TOKEN`)
      or `omni2api serve` on a server.
+  4. If none of the above is available: ask the user whether they have a
+     domain of their own. A named tunnel bound to it (see Options, Fixed
+     domain) sidesteps this entire class of failure — to every filter on
+     the path it is just a normal website hostname, not a shared
+     tunnel-service domain, and the address never rotates. This is the one
+     question worth asking before giving up on a public address. If they
+     have no domain, say so plainly and deliver the best local-only setup
+     the situation allows.
   A URL marked unverified may still work from outside: the check runs from
   this same filtered machine. Ask the user to open `<public base_url>/models` in a
   browser: any JSON answer, even 401, means it is reachable.

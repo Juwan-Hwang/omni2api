@@ -36,7 +36,7 @@ First decide whether a tunnel is needed. Two things can be remote: the seat
 |---|---|---|
 | this machine | this machine | `omni2api up -d --no-tunnel` (nothing leaves the machine) |
 | this machine | anywhere | `omni2api up -d` |
-| a cloud agent | anywhere | `omni2api up -d` on a machine with open internet; the cloud agent sets `OH_SEAT_URL=<public URL without /v1>` and `OH_SEAT_KEY=<responder key>` (check first: `curl <public base_url>/models`) |
+| a cloud agent | anywhere | `omni2api up -d` on a machine with open internet; the cloud agent sets `OH_SEAT_URL=<public URL without /v1>` and `OH_SEAT_KEY=<responder key>`, and proves it can reach that URL from where it sits (`oh-seat status` → `server: ok`) before the setup counts as done — a seat that cannot reach the server's address is not seated |
 
 If unsure, use the tunnel: it costs nothing and the local URL keeps working.
 
@@ -185,8 +185,19 @@ the guide.
   company networks: an egress proxy answering 403 for trycloudflare.com).
   That is the machine, not omni2api. Options, best first:
   1. Run `omni2api up` on a machine with normal internet access (the user's
-     own computer). The seat can stay where you are only if your network lets
-     you reach that machine's URL; otherwise sit in the seat on that machine too.
+     own computer) and stay on as a remote seat — but gate this route on
+     your own leg before you choose it. First check that YOU can reach the
+     kind of address that machine will get: fetch any trycloudflare.com
+     page from where you sit (through your `*_PROXY`, if that is your way
+     out — that is the reachability that counts). If your egress refuses
+     or times out on the tunnel domains outright, this route cannot seat
+     you; do not send the user down it. Once the user hands you the public
+     URL and the responder key, prove the leg before anyone configures a
+     tool: `oh-seat status` against that URL must say `server: ok`. Only
+     then deliver (step 5) and sit down (step 6). If you cannot reach it,
+     say so at once and take this option's other half instead: an agent
+     on that machine sits in the seat too. A route whose last leg you
+     never verified is not a route.
   2. `--tunnel pinggy` (ssh on port 443), if your filter allows it. If the
      only way out is an HTTP proxy, see the next bullet before concluding
      anything.

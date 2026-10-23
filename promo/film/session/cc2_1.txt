@@ -1,0 +1,2 @@
+MESSAGE conv=cnv_01a1689b4bb572f2a20455e742fef972 client=claude_code  AUX: answer with JSON {"title": "..."}; reply with -c cnv_01a1689b4bb572f2a20455e742fef972
+What is ./omni2api, in one line?

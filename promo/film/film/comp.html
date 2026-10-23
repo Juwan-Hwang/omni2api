@@ -1,0 +1,941 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>omni2api — launch film v2</title>
+<style>
+@font-face{font-family:"PingFang SF";src:url("fonts/PingFangSF.ttf") format("truetype");font-weight:100 900;font-display:block}
+@font-face{font-family:"JBM";src:url("fonts/JetBrainsMono-Regular.ttf") format("truetype");font-weight:400}
+@font-face{font-family:"JBM";src:url("fonts/JetBrainsMono-Bold.ttf") format("truetype");font-weight:700}
+@font-face{font-family:"DJM";src:url("fonts/DejaVuSansMono.ttf") format("truetype")}
+:root{--ink:#121316;--paper:#F3F1EC;--signal:#FF5B1F;--graphite:#6B6E76;--g2:#9C9FA6;
+  --sans:"PingFang SF",sans-serif;--mono:"JBM","DJM","PingFang SF",monospace}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:1920px;height:1080px;overflow:hidden;background:var(--ink)}
+body{font-family:var(--sans);-webkit-font-smoothing:antialiased;color:var(--paper)}
+#stage{position:absolute;inset:0;overflow:hidden;background:var(--ink)}
+.abs{position:absolute;left:0;top:0}
+#paper{position:absolute;inset:0;background:var(--paper);opacity:0}
+#world{position:absolute;left:0;top:0;width:1920px;height:1080px;transform-origin:0 0}
+.win{position:absolute;left:0;top:0;width:1320px;height:740px;transform-origin:0 0;border-radius:22px;background:#1B1C20;
+  box-shadow:0 0 0 1px rgba(255,255,255,.07),0 40px 120px rgba(0,0,0,.55),0 12px 30px rgba(0,0,0,.35);overflow:hidden}
+.win .bar{height:52px;display:flex;align-items:center;padding:0 22px;gap:9px;border-bottom:1px solid rgba(255,255,255,.06);background:#202126}
+.win .bar i{width:13px;height:13px;border-radius:50%;display:block}
+.win .bar .tt{position:absolute;left:0;right:0;text-align:center;font:500 17px var(--mono);color:#8A8D94;letter-spacing:.3px;pointer-events:none}
+.win .body{position:absolute;left:0;top:52px;right:0;bottom:0;padding:26px 34px;overflow:hidden}
+.win pre{font-family:var(--mono);white-space:pre;position:relative}
+#seat pre{font-size:24px;line-height:36px;color:#B9BCC2}
+#seat .c{color:var(--paper)} #seat .p{color:#7D8088} #seat .h{color:var(--paper);font-weight:700} #seat .dim{color:#7D8088}
+#seat .hl{background:rgba(243,241,236,.10);box-shadow:0 0 0 4px rgba(243,241,236,.10);border-radius:3px}
+#cc pre{font-size:22.6px;line-height:33px;color:#E8E8E8}
+#cc .body{padding:22px 28px}
+#wire{position:absolute;left:0;top:0;height:2px;background:rgba(243,241,236,.16);transform-origin:0 50%}
+.lab{position:absolute;left:0;top:0;font:600 15px var(--mono);letter-spacing:3px;color:#8A8D94;white-space:nowrap}
+.lab b{color:var(--paper);font-weight:700;letter-spacing:1px;margin-left:12px;font-family:var(--sans);font-size:24px;letter-spacing:0}
+.caret{position:absolute;left:0;top:0;background:var(--signal);transform-origin:0 0}
+.k{position:absolute;left:0;top:0;white-space:nowrap}
+.k .ln{display:block;position:relative}
+.k .ch{opacity:0}
+.big{font-size:96px;font-weight:600;letter-spacing:-1.5px;line-height:1.18}
+.mid{font-size:54px;font-weight:500;letter-spacing:-.4px;line-height:1.3}
+.cn{font-size:36px;font-weight:500;letter-spacing:2px;color:var(--g2);line-height:1.6}
+.lbl{font:600 25px var(--mono);letter-spacing:4px;color:var(--g2);text-transform:uppercase}
+.ink{color:var(--ink)}
+#cap{position:absolute;left:0;top:0;white-space:nowrap}
+#cap .a{font-size:46px;font-weight:600;letter-spacing:-.3px;line-height:1.25;color:var(--paper)}
+#cap .b{font-size:26px;font-weight:500;letter-spacing:1.5px;line-height:1.7;color:var(--g2)}
+#cap .ln{display:block;overflow:hidden;padding-bottom:.08em}
+#cap .ln>span{display:inline-block}
+#feat{position:absolute;inset:0;opacity:0}
+#fx{position:absolute;inset:0;overflow:hidden}
+.mono{font-family:var(--mono)}
+#lock{position:absolute;left:0;top:0;width:1128px;height:228px;transform-origin:0 0}
+#tag{position:absolute;left:0;top:650px;width:1920px;text-align:center;font-size:34px;font-weight:500;letter-spacing:3px;color:#C9C7C1}
+#url{position:absolute;left:0;top:716px;width:1920px;text-align:center;font:400 22px var(--mono);letter-spacing:1.5px;color:var(--graphite)}
+#img3d{position:absolute;left:0;top:0;width:1920px;height:1080px}
+#fade{position:absolute;inset:0;background:#000;opacity:0}
+/* monolingual cuts: CJK gets no negative tracking and a little air; Latin sub-lines lose the CJK letter-spacing */
+html[lang=en] .cn{font-size:34px;letter-spacing:0;line-height:1.5}
+html[lang=en] #cap .b{letter-spacing:.2px}
+html[lang=zh-Hans] .big{letter-spacing:1px;line-height:1.32}
+html[lang=zh-Hans] .mid{letter-spacing:1px}
+html[lang=zh-Hans] #cap .a{letter-spacing:1px}
+html[lang=zh-Hans] #tag{letter-spacing:6px}
+/* terminal text is data: no programming ligatures (JetBrains Mono turns ||- and friends into glyphs) */
+.mono,.win pre,.lab,.lbl,#url,#anyRq,#anyCode,#anyAns{font-variant-ligatures:none;font-feature-settings:"liga" 0,"calt" 0}
+#hud{position:absolute;right:12px;bottom:8px;font:14px var(--mono);color:#f0f;display:none}
+</style>
+<script src="mspring.js"></script>
+</head><body>
+<div id="stage">
+  <div id="paper"></div>
+  <div id="world">
+    <div id="wire"></div>
+    <div id="labL" class="lab"><span id="labLt">CALLER</span><b>Claude Code</b></div>
+    <div id="labR" class="lab"><span id="labRt">SEAT</span><b id="labRb">anything running oh-seat</b></div>
+    <div id="cc" class="win"><div class="bar"><i style="background:#FF5F57"></i><i style="background:#FEBC2E"></i><i style="background:#28C840"></i><div class="tt" id="ttCC">claude — caller</div></div><div class="body"><pre id="ccpre"></pre></div></div>
+    <div id="seat" class="win"><div class="bar"><i style="background:#FF5F57"></i><i style="background:#FEBC2E"></i><i style="background:#28C840"></i><div class="tt" id="ttSeat">oh-seat — the seat</div></div><div class="body"><pre id="seatpre"></pre></div></div>
+  </div>
+  <div id="fx"></div>
+  <div id="cap"></div>
+  <div id="lockwrap" class="abs"></div>
+  <div id="tag"></div>
+  <div id="url">github.com/Juwan-Hwang/omni2api</div>
+  <img id="img3d" alt="">
+  <div id="caret" class="caret"></div>
+  <div id="pk" class="caret"></div>
+  <div id="fade"></div>
+  <div id="hud"></div>
+</div>
+<script>
+// ───────────────────────── helpers ─────────────────────────
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const lerp = (a, b, u) => a + (b - a) * u;
+const seg = (t, a, b) => clamp((t - a) / (b - a));
+const E = {
+  linear: (u) => u, appleOut: MO.appleOut, appleInOut: MO.appleInOut, whip: MO.whip, easeIn: MO.easeIn, easeOut: MO.easeOut, backOut: MO.backOut,
+  expoIn: (u) => (u <= 0 ? 0 : u >= 1 ? 1 : (Math.pow(2, 10 * u) - 1) / 1023),
+  expoOut: (u) => (u >= 1 ? 1 : 1 - Math.pow(2, -10 * u)),
+  expoInOut: (u) => (u <= 0 ? 0 : u >= 1 ? 1 : u < 0.5 ? Math.pow(2, 20 * u - 10) / 2 : (2 - Math.pow(2, -20 * u + 10)) / 2),
+};
+const SPR = {}; const sp = (vd, b) => SPR[vd + ':' + b] || (SPR[vd + ':' + b] = MO.spring(vd, b));
+const $ = (id) => document.getElementById(id);
+function op(el, v) { el.style.opacity = (+v).toFixed(4); el.style.visibility = v <= 0.001 ? 'hidden' : 'visible'; }
+const pending = [];
+function setSrc(img, src) { if (img.dataset.src === src) return; img.dataset.src = src; img.src = src; pending.push(img.decode().catch(() => {})); }
+const pad4 = (n) => String(n).padStart(4, '0');
+const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+// ───────────────────────── language switch: ?lang=en | zh (monolingual cuts; terminal text is real data and never translated) ─────────────────────────
+const Q = new URLSearchParams(location.search);
+const LANG = Q.get('lang') === 'zh' ? 'zh' : 'en';
+document.documentElement.lang = LANG === 'zh' ? 'zh-Hans' : 'en';
+const ZH = LANG === 'zh';
+const COPY = {
+  en: {
+    th1a: 'Anything that can sit at a terminal', th1b: 'an AI agent. a script. a whole toolchain.', th2: 'can be an API.',
+    qlab: 'The seat', q1: 'Put anything in the seat.', q2: 'It answers as the model.',
+    ttCC: 'claude — caller', ttSeat: 'oh-seat — the seat', labL: 'CALLER', labR: 'SEAT', labRb: 'anything running oh-seat',
+    caps: [
+      [['One command.'], 'Local and public base_url, an api_key, a model.'],
+      [['The seat names itself.'], null],
+      [['Claude Code asks model “anything”.'], 'The request lands in the seat.'],
+      [['A real tool_call.'], 'It runs on the caller’s own machine.'],
+      [['Claude Code asked.', 'Whatever sat in the seat answered.'], null],
+    ],
+    anyK: 'Same request. Anything in the seat.', anySeat: 'Seat', anyGot: 'Caller receives',
+    anyNames: ['An AI agent.', 'A Python script.', 'A shell loop.', 'A cron job.', 'A cow.'],
+    anyIdx: ['an AI agent', 'a Python script', 'a shell loop', 'a cron job', 'cowsay'],
+    clLab: 'Tested end to end with',
+    feats: [['Strips the harness.', 'The seat sees only what the user typed.'], ['Real tool calls.', 'oh-seat tool becomes genuine tool_calls in the caller’s response.'],
+      ['Streams back.', 'Every word goes back as SSE, as it is sent.'], ['Many callers at once.', 'Every caller gets its own isolated conversation.']],
+    f0b: 'system prompt · 15,823 chars · 13 tool schemas', f1c: 'OpenAI Python SDK → the tool ran in the caller’s own shell · exit=0 · 19989',
+    tag: 'Anything can be the API.', end: 'Anything to API',
+  },
+  zh: {
+    th1a: '凡是能在终端里跑的', th1b: 'AI 智能体，一段脚本，一整套工具链', th2: '都能变成 API',
+    qlab: '坐席', q1: '坐席上，放什么都行', q2: '调用方看到的，就是模型',
+    ttCC: 'claude — 调用方', ttSeat: 'oh-seat — 坐席', labL: '调用方', labR: '坐席', labRb: '任何跑着 oh-seat 的东西',
+    caps: [
+      [['一条命令'], '本地、公网地址，密钥，模型名，一次给齐'],
+      [['模型名，坐席自己起'], null],
+      [['Claude Code 呼叫模型 “anything”'], '请求落到坐席上'],
+      [['真实的 tool_call'], '在调用方自己的机器上执行'],
+      [['Claude Code 发问，', '坐席作答——坐的是什么都行'], null],
+    ],
+    anyK: '同一个问题，坐席换成什么都行', anySeat: '坐席', anyGot: '调用方收到',
+    anyNames: ['一个 AI 智能体', '一段 Python 脚本', '一个 shell 循环', '一个定时任务', '一头牛'],
+    anyIdx: ['AI 智能体', 'Python 脚本', 'shell 循环', '定时任务', 'cowsay'],
+    clLab: '逐一实测通过',
+    feats: [['剥掉外壳', '坐席只看到用户亲手打的那句话'], ['工具调用，是真的', 'oh-seat tool 直接变成调用方收到的 tool_calls'],
+      ['边写边回', '每个词一出手，就以 SSE 流回调用方'], ['来多少调用方都行', '每个调用方一条会话，互不串线']],
+    f0b: '系统提示词 · 15,823 字符 · 13 个工具定义', f1c: 'OpenAI Python SDK → 工具在调用方自己的 shell 里执行 · exit=0 · 19989',
+    tag: '万物，皆可 2API', end: '万物皆可 2API',
+  },
+}[LANG];
+// a typed line whose on-screen duration is fixed in seconds, so EN and ZH share the beat whatever their length
+const typed = (text, cls, t0, dur) => ({ text, cls, t0, rate: [...text].length / dur });
+
+// ───────────────────────── timeline (120 BPM: beat 0.5 s, bar 2 s) ─────────────────────────
+const BEAT = 0.5, BAR = 2;
+// v2: a 6 s (3-bar) "anything in the seat" beat is inserted at 31; everything after it moves +6 s
+const T = { open: 0, thesis: 6, quote: 12, term: 16, split: 21, any: 31, callers: 37, feat: 41, tag: 49, end: 51 };
+T.dur = 59.5;
+const OPEN_N = 180, END_N = 90;
+
+// ───────────────────────── the caret: one Signal block carried through the film ─────────────────────────
+// brand proportion: 2:1, sits on the baseline (cursor 62×31 against a 100 x-height → w = .578x, h = .289x)
+const CARET = { x: 0, y: 0, w: 0, h: 0, o: 0 };
+function caretSet(x, y, w, h, o = 1) { CARET.x = x; CARET.y = y; CARET.w = w; CARET.h = h; CARET.o = o; }
+function drawCaret() {
+  const c = $('caret');
+  c.style.width = CARET.w.toFixed(2) + 'px'; c.style.height = CARET.h.toFixed(2) + 'px';
+  c.style.transform = `translate(${CARET.x.toFixed(2)}px,${CARET.y.toFixed(2)}px)`;
+  op(c, CARET.o);
+}
+const blink = (t, t0) => (t < t0 ? 1 : ((t - t0) % 1.0) < 0.5 ? 1 : 0);
+
+// ───────────────────────── kinetic type blocks (screen space) ─────────────────────────
+// a block: lines [{text, cls, t0, rate}] at (x,y). Characters reveal at `rate` chars/s; the caret rides the last one.
+const KB = {};
+function kblock(id, x, y, lines, opts = {}) {
+  const el = document.createElement('div'); el.className = 'k'; el.id = id; $('fx').appendChild(el);
+  el.style.left = x + 'px'; el.style.top = y + 'px'; if (opts.align === 'center') { el.style.left = '0'; el.style.width = '1920px'; el.style.textAlign = 'center'; }
+  el.innerHTML = lines.map((l) => `<span class="ln ${l.cls}"><i class="bl" style="display:inline-block;width:0;height:0;vertical-align:baseline"></i>${[...l.text].map((c) => `<span class="ch">${esc(c)}</span>`).join('')}</span>`).join('');
+  KB[id] = { el, lines, opts, chars: [...el.querySelectorAll('.ln')].map((ln) => [...ln.querySelectorAll('.ch')]), last: [] };
+  return KB[id];
+}
+// reveal state; returns caret geometry (or null)
+function kshow(id, t, caretLine = -1) {
+  const B = KB[id]; let cg = null;
+  B.lines.forEach((l, i) => {
+    const n = l.rate === 0 ? (t >= l.t0 ? l.text.length : 0) : clamp(Math.floor((t - l.t0) * (l.rate || 40)) + 1, 0, [...l.text].length);
+    const chs = B.chars[i];
+    if (B.last[i] !== n) { chs.forEach((c, k) => { c.style.opacity = k < n ? 1 : 0; }); B.last[i] = n; }
+    if ((caretLine === -1 && t >= l.t0) || caretLine === i) {
+      const ln = B.el.children[i], bl = ln.querySelector('.bl').getBoundingClientRect();
+      const fs = parseFloat(getComputedStyle(ln).fontSize);
+      const x = n > 0 ? chs[n - 1].getBoundingClientRect().right : bl.left;
+      cg = { x: x + fs * 0.08, base: bl.top, fs, typing: n < chs.length, done: n >= chs.length };
+    }
+  });
+  return cg;
+}
+function caretOnType(cg, t, t0blink, o = 1) {
+  if (!cg) return;
+  const w = cg.fs * 0.30, h = cg.fs * 0.15;
+  caretSet(cg.x, cg.base - h, w, h, o * (cg.typing ? 1 : blink(t, t0blink)));
+}
+
+// ───────────────────────── sections ─────────────────────────
+// THESIS 6–12
+function buildThesis() {
+  kblock('th1', 200, 330, [
+    typed(COPY.th1a, 'big', 6.55, 1.17),
+    typed(COPY.th1b, 'mid', 7.9, 0.93),
+  ]);
+  kblock('th2', 200, 380, [typed(COPY.th2, 'big', 9.55, 0.64)]);
+  KB.th1.el.children[1].style.color = 'var(--g2)'; KB.th1.el.children[1].style.marginTop = '14px';
+}
+function drawThesis(t) {
+  const a = KB.th1, b = KB.th2;
+  const on1 = t >= T.thesis && t < 9.4, on2 = t >= 9.3 && t < T.quote + 0.05;
+  op(a.el, on1 ? 1 - seg(t, 9.05, 9.35) : 0); op(b.el, on2 ? 1 : 0);
+  if (on1) {
+    a.el.style.transform = `translateY(${(-60 * E.expoIn(seg(t, 9.05, 9.4))).toFixed(1)}px)`;
+    const cg = kshow('th1', t, t < 7.9 ? 0 : 1);
+    if (t >= 6.55) caretOnType(cg, t, 8.9);
+  }
+  if (on2) {
+    const cg = kshow('th2', t, 0);
+    if (t < 11.55) caretOnType(cg, t, 10.2);
+    else {
+      // carry → the caret glides to the quote's first character position, the Paper opens from it
+      const u = E.appleInOut(seg(t, 11.55, 12.0));
+      const w = cg.fs * 0.30, h = cg.fs * 0.15;
+      const q = QSTART;
+      caretSet(lerp(cg.x, q.x, u), lerp(cg.base - h, q.y, u), lerp(w, q.w, u), lerp(h, q.h, u), 1);
+    }
+    b.el.style.opacity = (1 - seg(t, 11.55, 11.8)).toFixed(3);
+  }
+  // 3D → caret: the full-frame Signal (camera inside the cursor) contracts to the typing caret
+  if (t >= T.thesis && t < 6.55) {
+    const tg = kshow('th1', 6.55, 0); kshow('th1', t, 0);
+    const w1 = tg.fs * 0.30, h1 = tg.fs * 0.15, cx1 = tg.x - tg.fs * 0.08 + w1 / 2, cy1 = tg.base - h1 / 2;
+    caretZoom(960, 540, 2100, 1240, cx1, cy1, w1, h1, E.expoOut(seg(t, T.thesis, 6.5)));
+  }
+}
+// a rect morph in log-size space between a full-frame Signal field and a caret (centre-anchored)
+function caretZoom(cx0, cy0, w0, h0, cx1, cy1, w1, h1, u) {
+  const w = Math.exp(lerp(Math.log(w0), Math.log(w1), u)), h = Math.exp(lerp(Math.log(h0), Math.log(h1), u));
+  const k = (w - w1) / Math.max(1e-6, w0 - w1);           // centre follows the size, so the field closes onto the caret
+  const cx = lerp(cx1, cx0, k), cy = lerp(cy1, cy0, k);
+  caretSet(cx - w / 2, cy - h / 2, w, h, 1);
+}
+
+// QUOTE 12–16 (Paper ground)
+let QSTART = { x: 200, y: 560, w: 30, h: 15 };
+function buildQuote() {
+  kblock('qlab', 200, 300, [{ text: COPY.qlab, cls: 'lbl', t0: 12.15, rate: 0 }]);
+  kblock('q', 200, 380, [
+    typed(COPY.q1, 'big ink', 12.35, 0.68),
+    typed(COPY.q2, 'big ink', 13.12, 0.8),
+  ]);
+  const g = kshow('q', 12.35, 0); const fs = g.fs;
+  QSTART = { x: g.x - fs * 0.08, y: g.base - fs * 0.15, w: fs * 0.30, h: fs * 0.15 };
+}
+function drawQuote(t) {
+  const P = $('paper');
+  const on = t >= T.quote - 0.05 && t < T.term + 0.6;
+  op(KB.qlab.el, 0); op(KB.q.el, 0);
+  if (!on) { op(P, 0); P.style.clipPath = 'none'; return; }
+  // the Paper opens as a circle from the caret, and collapses into the terminal window at the end
+  op(P, 1);
+  const cx = QSTART.x + QSTART.w / 2, cy = QSTART.y + QSTART.h / 2;
+  if (t < T.quote + 0.6) {
+    const r = 2400 * E.expoIn(seg(t, T.quote - 0.05, T.quote + 0.35)) ** 0.7;
+    P.style.clipPath = `circle(${r.toFixed(1)}px at ${cx}px ${cy}px)`;
+  } else if (t < 15.55) P.style.clipPath = 'none';
+  else {
+    const u = E.expoInOut(seg(t, 15.55, 16.15));
+    const R = winScreenRect(T.term + 0.001);
+    const ins = [lerp(0, R[1], u), lerp(0, 1920 - R[0] - R[2], u), lerp(0, 1080 - R[1] - R[3], u), lerp(0, R[0], u)];
+    P.style.clipPath = `inset(${ins[0].toFixed(1)}px ${ins[1].toFixed(1)}px ${ins[2].toFixed(1)}px ${ins[3].toFixed(1)}px round ${lerp(0, 22 * R[4], u).toFixed(1)}px)`;
+    P.style.background = `rgb(${lerp(243, 27, u) | 0},${lerp(241, 28, u) | 0},${lerp(236, 32, u) | 0})`;
+    if (t >= 16.15) op(P, 0);
+  }
+  if (t < 15.55) P.style.background = 'var(--paper)';
+  const fo = 1 - seg(t, 15.5, 15.75);
+  op(KB.qlab.el, E.easeOut(seg(t, 12.15, 12.5)) * fo);
+  op(KB.q.el, fo);
+  const cg = kshow('q', t, t < 13.12 ? 0 : 1);
+  kshow('qlab', t);
+  if (t >= T.quote && t < 15.55) caretOnType(cg, t, 14.0);
+  // ⏎ at 15.5: the caret holds its place on screen; the terminal forms around it (carry)
+  if (t >= 15.55 && t < T.term + 0.2) {
+    const R = termCaretScreen(T.term + 0.001);
+    const u = E.expoInOut(seg(t, 15.55, 16.15));
+    const w = cg.fs * 0.30, h = cg.fs * 0.15;
+    caretSet(lerp(cg.x, R.x, u), lerp(cg.base - h, R.y, u), lerp(w, R.w, u), lerp(h, R.h, u), 1);
+  }
+}
+
+// ───────────────────────── world: terminals + camera ─────────────────────────
+const MASK = 'ohk_35c6edb7••••••••••••••••';
+// seat transcript: real output (omni2api 0.1.11 / oh-seat 0.2.3, captured 2026-10-23); long lines cut to the pane, keys masked
+const SEAT = [
+  { at: 16.1, cmd: 'omni2api up -d', rate: 26 },
+  { at: 16.85, out: '' },
+  { at: 16.85, out: 'Omni2API is up.', cls: 'h' },
+  { at: 16.85, out: '' },
+  { at: 16.92, out: '  Caller config (OpenAI-compatible, or Anthropic at the same base):', cls: 'dim' },
+  { at: 16.99, out: '    base_url  (local)  http://127.0.0.1:8080/v1', id: 'local' },
+  { at: 17.06, out: '    base_url  (public) https://sms-payday-pump-advocate.trycloudflare.com/v1', id: 'public' },
+  { at: 17.13, out: '    api_key            ' + MASK, id: 'key' },
+  { at: 17.2, out: '    model              omni2api', id: 'model' },
+  { at: 17.2, out: '' },
+  { at: 19.0, cmd: 'oh-seat name anything', rate: 32 },
+  { at: 19.75, out: 'model: anything', id: 'name' },
+  { at: 20.25, cmd: 'oh-seat next', rate: 30 },
+  // ── split: Claude Code's request lands
+  { at: 23.5, out: 'NEW CONVERSATION conv=cnv_01a1689b4c3372d38f7c65f1b92384a5', cls: 'dim' },
+  { at: 23.5, out: 'MESSAGE conv=cnv_01a1689b4c3372d38f7c65f1b92384a5 client=claude_code', cls: 'h', id: 'msg' },
+  { at: 23.5, out: 'What is ./omni2api, in one line?', cls: 'c', id: 'ask' },
+  { at: 23.62, out: 'tools in cnv_01a1689b4c33… (13; * = required; system prompt 15823 chars)', cls: 'dim', id: 'tools' },
+  { at: 23.68, out: '  Agent(description*: string, prompt*: string, effort: string, …)' },
+  { at: 23.72, out: '  Bash(command*: string, dangerouslyDisableSandbox: boolean, description…)', id: 'bash' },
+  { at: 23.76, out: '  Edit(file_path*: string, new_string*: string, old_string*: string, …)' },
+  { at: 23.80, out: '  Read(file_path*: string, allow_large: boolean, limit: integer, …)' },
+  { at: 23.84, out: '  Write(content*: string, file_path*: string)   … and 8 more' },
+  { at: 23.88, out: '  caller env: cwd=…/session/cc  platform=linux  shell=bash', cls: 'dim' },
+  { at: 24.55, cmd: 'oh-seat tool Bash command="grep -m1 \'###\' omni2api/README.md" description="Read the tagline"', rate: 110, id: 'tool' },
+  { at: 26.95, out: 'TOOL RESULT Bash status=success id=call_01a1689ba7b97e63b2184fdb98741c0e', cls: 'h', id: 'res' },
+  { at: 26.95, out: '### Anything to API — 万物皆可 2API', cls: 'c', id: 'resv' },
+  // v2: the real reply is cut with "…" before its last clause (it framed the seat as "me")
+  { at: 27.35, cmd: 'oh-seat reply "Anything to API — it turns whatever sits in its seat into an OpenAI/Anthropic-compatible model. …"', rate: 130, id: 'reply' },
+  { at: 28.85, out: 'replied conv=cnv_01a1689b4c3372d38f7c65f1b92384a5 (delivered live)', cls: 'dim', id: 'replied' },
+  { at: 29.0, cmd: 'oh-seat next', rate: 30 },
+];
+const SEAT_COLS = 86, SEAT_ROWS = 17, SEAT_LH = 36; let SEAT_CW = 24 * 0.6, CC_CW = 22.6 * 0.6;
+function wrapRows(s, cols) { const r = []; const a = [...s]; if (!a.length) return ['']; for (let i = 0; i < a.length; i += cols) r.push(a.slice(i, i + cols).join('')); return r; }
+let seatKey = '';
+// returns {rows:[{html}], caret:{row,col}|null, idRow:{id:row}}
+function seatState(t) {
+  const rows = []; const idRow = {}; let caret = null;
+  for (let i = 0; i < SEAT.length; i++) {
+    const e = SEAT[i]; if (t < e.at) break;
+    if (e.cmd !== undefined) {
+      const n = Math.min([...e.cmd].length, Math.floor((t - e.at) * e.rate));
+      const typed = [...e.cmd].slice(0, n).join('');
+      const full = '$ ' + typed; const wr = wrapRows(full, SEAT_COLS);
+      if (e.id) idRow[e.id] = rows.length;
+      wr.forEach((w, k) => rows.push(k === 0 ? `<span class="p">$</span> <span class="c">${esc(w.slice(2))}</span>` : `<span class="c">${esc(w)}</span>`));
+      const nxt = SEAT[i + 1];
+      if (!nxt || t < nxt.at) { const last = wr[wr.length - 1]; caret = { row: rows.length - 1, col: [...last].length, typing: n < [...e.cmd].length, t0: e.at + [...e.cmd].length / e.rate }; }
+    } else {
+      if (e.id) idRow[e.id] = rows.length;
+      const s = [...e.out].length > SEAT_COLS ? [...e.out].slice(0, SEAT_COLS - 1).join('') + '…' : e.out;
+      rows.push(e.cls ? `<span class="${e.cls}">${esc(s)}</span>` : esc(s));
+    }
+  }
+  return { rows, caret, idRow };
+}
+let SEAT_HL = null;   // {id, a} highlight
+function drawSeatText(t) {
+  const st = seatState(t);
+  const top = Math.max(0, st.rows.length - SEAT_ROWS);
+  const vis = st.rows.slice(top);
+  const hl = SEAT_HL && st.idRow[SEAT_HL.id] !== undefined ? st.idRow[SEAT_HL.id] - top : -1;
+  const key = vis.join('\n') + '|' + hl;
+  if (key !== seatKey) { seatKey = key; $('seatpre').innerHTML = vis.map((r, i) => (i === hl ? `<span class="hl">${r}</span>` : r)).join('\n'); }
+  st.top = top; return st;
+}
+// seat window placement in world px: (x, y, scale)
+const SEAT_A = [300, 170, 1], SEAT_B = [990, 300, 0.659], CC_B = [60, 300, 0.659];
+function seatPlace(t) {
+  const u = Math.min(1.02, sp(0.6, 0.12)(t - T.split));
+  return t < T.split ? SEAT_A : SEAT_A.map((v, i) => lerp(v, SEAT_B[i], u));
+}
+function ccPlace(t) {
+  const u = Math.min(1.02, sp(0.62, 0.1)(t - T.split - 0.08));
+  return [lerp(-1500, CC_B[0], u), CC_B[1], CC_B[2]];
+}
+// char cell (row, col) of the seat pane → world px
+function seatCell(t, row, col) { const p = seatPlace(t); return [p[0] + (34 + col * SEAT_CW) * p[2], p[1] + (52 + 26 + row * SEAT_LH) * p[2], p[2]]; }
+
+// camera: keys {t, f world focus, s screen pos, z, e}
+let CAM = [];
+function K(t, f, s, z, e = 'appleInOut') { CAM.push({ t, f, s, z, e }); }
+function hold(t) { const p = CAM[CAM.length - 1]; K(t, p.f, p.s, p.z, 'linear'); }
+function camAt(t) {
+  if (t <= CAM[0].t) return CAM[0];
+  for (let i = 0; i < CAM.length - 1; i++) {
+    const a = CAM[i], b = CAM[i + 1];
+    if (t >= a.t && t < b.t) {
+      let u; if (b.e.startsWith('spring')) { const [, vd, bo] = b.e.split(':'); u = sp(+vd, +bo)(t - a.t); } else u = E[b.e]((t - a.t) / (b.t - a.t));
+      return { f: [lerp(a.f[0], b.f[0], u), lerp(a.f[1], b.f[1], u)], s: [lerp(a.s[0], b.s[0], u), lerp(a.s[1], b.s[1], u)], z: Math.exp(lerp(Math.log(a.z), Math.log(b.z), u)) };
+    }
+  }
+  return CAM[CAM.length - 1];
+}
+const toScreen = (c, p) => [c.s[0] + (p[0] - c.f[0]) * c.z, c.s[1] + (p[1] - c.f[1]) * c.z];
+function winScreenRect(t) { const c = camAt(t), p = seatPlace(t), a = toScreen(c, [p[0], p[1]]); return [a[0], a[1], 1320 * p[2] * c.z, 740 * p[2] * c.z, p[2] * c.z]; }
+function termCaretScreen(t) {
+  // the caret of the first prompt line "$ ▮" (row 0, col 2)
+  const c = camAt(t), cell = seatCell(t, 0, 2), sc = toScreen(c, [cell[0], cell[1]]);
+  const k = cell[2] * c.z, fs = 24 * k;
+  return { x: sc[0], y: sc[1] + 27 * k - fs * 0.3 * 0.62, w: SEAT_CW * k, h: fs * 0.3 * 0.62 };
+}
+const CENTER = [960, 540];
+function buildCam() {
+  CAM = [];
+  // TERM: open at the window, push to the URLs, the key, the name
+  K(T.term, CENTER, CENTER, 1.0, 'linear');
+  hold(16.9);
+  const rowY = (r) => 170 + 52 + 26 + r * 36 + 18;
+  K(17.55, [860, rowY(6)], [900, 520], 1.42, 'spring:0.55:0.14');
+  hold(18.55);
+  K(19.0, [760, rowY(10)], [860, 560], 1.25, 'appleInOut');
+  hold(20.2);
+  K(20.9, CENTER, CENTER, 1.04, 'appleInOut');
+  // SPLIT 21–31 — panes: CC world (60,300) seat (990,300), each 870×488; captions live in the band below
+  const PCY = 300 + 740 * 0.659 / 2, CCX = 60 + 1320 * 0.659 / 2, STX = 990 + 1320 * 0.659 / 2;
+  const onCC = (t, e, z = 1.3, dy = 0) => K(t, [CCX, PCY + dy], [880, 440], z, e);
+  const onSeat = (t, e, z = 1.3, dy = 0) => K(t, [STX, PCY + dy], [1040, 440], z, e);
+  K(21.7, [960, PCY], [960, 450], 1.0, 'appleOut');
+  onCC(22.25, 'appleInOut');
+  hold(23.0);
+  onSeat(23.5, 'whip');
+  hold(24.45);
+  onSeat(24.95, 'appleInOut', 1.34, 18);
+  hold(25.5);
+  onCC(26.0, 'whip');
+  hold(26.5);
+  onSeat(27.0, 'whip', 1.34, 18);
+  hold(28.5);
+  onCC(29.0, 'whip', 1.3);
+  const ansY = 300 + (52 + 22 + 8 * 33) * 0.659;
+  K(30.45, [CCX - 40, ansY], [930, 390], 1.62, 'appleInOut');
+  K(31.0, [CCX - 40, ansY], [930, 390], 2.6, 'expoIn');
+}
+
+// ───────────────────────── Claude Code pane (real tmux snapshots) ─────────────────────────
+let CCD = null;
+const CC_ROWS = [1, 2, 3, -1, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23];
+const SUBST = { '⎿': '└', '⏵': '▸' };
+function spanHtml(s, txt) {
+  let fg = s.fg, bg = s.bg; if (s.inv) { const x = fg || '#E8E8E8'; fg = bg || '#1B1C20'; bg = x; }
+  const st = [];
+  if (fg) st.push('color:' + fg); if (bg) st.push('background:' + bg);
+  if (s.b) st.push('font-weight:700'); if (s.d) st.push('opacity:.55'); if (s.i) st.push('font-style:italic');
+  const t = esc([...(txt ?? s.t)].map((c) => SUBST[c] || c).join(''));
+  return st.length ? `<span style="${st.join(';')}">${t}</span>` : t;
+}
+function rowHtml(row, cut) {
+  let out = '', n = 0;
+  for (const s of row) {
+    const a = [...s.t];
+    if (cut !== undefined && n + a.length > cut) { out += spanHtml(s, a.slice(0, Math.max(0, cut - n)).join('')); break; }
+    out += spanHtml(s); n += a.length;
+  }
+  return out;
+}
+const ASK = 'What is ./omni2api, in one line?';
+let ccKey = '';
+function ccState(t) {
+  // 21.8–23.0 typing; 23.0 sent (spinner); 25.95 tool row (blinking ●); 28.95 the answer streams in
+  if (t < 23.0) return { s: 'idle', type: clamp(Math.floor((t - 21.85) * 30), 0, ASK.length) };
+  if (t < 25.95) return { s: 'sent' };
+  if (t < 28.95) return { s: (Math.floor((t - 25.95) / 0.3) % 2) ? 'tool2' : 'tool' };
+  return { s: 'done', reveal: clamp((t - 28.95) / 0.55) };
+}
+function drawCC(t) {
+  if (!CCD) return null;
+  const st = ccState(t); const snap = CCD[st.s];
+  const key = JSON.stringify(st);
+  let caret = null;
+  if (key !== ccKey) {
+    ccKey = key;
+    const rows = CC_ROWS.map((r) => (r < 0 ? '' : r));
+    const html = rows.map((r, i) => {
+      if (r === '') return '';
+      if (r === 19) return '';
+      if (st.s === 'idle' && r === 21) return spanHtml({ t: '❯ ' + ASK.slice(0, st.type) });
+      if (st.s === 'done' && (r === 14 || r === 15)) {
+        const total = [...snap[14].map((x) => x.t).join('')].length + [...snap[15].map((x) => x.t).join('')].length;
+        const n = Math.floor(st.reveal * total), n14 = [...snap[14].map((x) => x.t).join('')].length;
+        return r === 14 ? rowHtml(snap[14], Math.min(n, n14)) : rowHtml(snap[15], Math.max(0, n - n14));
+      }
+      if (st.s === 'done' && r === 17 && st.reveal < 1) return '';
+      return rowHtml(snap[r]);
+    }).join('\n');
+    $('ccpre').innerHTML = html;
+  }
+  if (st.s === 'idle') caret = { row: CC_ROWS.indexOf(21), col: 2 + st.type, typing: st.type < ASK.length && t >= 21.85 };
+  return caret;
+}
+function ccCell(t, row, col) { const p = ccPlace(t); return [p[0] + (28 + col * CC_CW) * p[2], p[1] + (52 + 22 + row * 33) * p[2], p[2]]; }
+
+// ───────────────────────── packets along the wire ─────────────────────────
+const PK = [[23.0, 'R'], [25.5, 'L'], [26.5, 'R'], [28.5, 'L']];
+function drawWorld(t) {
+  const W = $('world');
+  const on = t >= T.term - 0.01 && t < T.any + 0.05;
+  op(W, on ? 1 - seg(t, T.any - 0.02, T.any + 0.08) : 0);
+  if (!on) { op($('pk'), 0); return; }
+  const c = camAt(t);
+  const ca = camAt(Math.max(T.term, t - 0.03)), cb = camAt(t + 0.03);
+  const vx = ((cb.s[0] - cb.f[0] * cb.z) - (ca.s[0] - ca.f[0] * ca.z)) / 0.06;   // screen px/s of the world origin
+  const tilt = clamp(vx / 9000, -1, 1) * 7;
+  $('stage').style.perspective = '2600px';
+  W.style.transform = `rotateY(${tilt.toFixed(3)}deg) translate(${c.s[0].toFixed(2)}px,${c.s[1].toFixed(2)}px) scale(${c.z.toFixed(5)}) translate(${(-c.f[0]).toFixed(2)}px,${(-c.f[1]).toFixed(2)}px)`;
+  const sp_ = seatPlace(t), cp = ccPlace(t);
+  $('seat').style.transform = `translate(${sp_[0].toFixed(2)}px,${sp_[1].toFixed(2)}px) scale(${sp_[2].toFixed(5)})`;
+  $('cc').style.transform = `translate(${cp[0].toFixed(2)}px,${cp[1].toFixed(2)}px) scale(${cp[2].toFixed(5)})`;
+  op($('cc'), t >= T.split ? 1 : 0);
+  // seat window appears out of the Paper at 16.1
+  op($('seat'), seg(t, 15.95, 16.15));
+  // highlights
+  SEAT_HL = t >= 17.4 && t < 18.7 ? { id: 'public' } : t >= 19.7 && t < 20.3 ? { id: 'name' } : t >= 23.55 && t < 24.4 ? { id: 'ask' } : t >= 27.0 && t < 27.4 ? { id: 'resv' } : null;
+  const st = drawSeatText(t);
+  const ccar = drawCC(t);
+  // wire + labels
+  const wy = 300 + 740 * 0.659 / 2, wx0 = 60 + 1320 * 0.659, wx1 = 990;
+  const wo = seg(t, T.split + 0.45, T.split + 0.9);
+  const wire = $('wire'); wire.style.width = (wx1 - wx0) + 'px'; wire.style.transform = `translate(${wx0}px,${wy}px) scaleX(${E.appleOut(wo).toFixed(4)})`; op(wire, wo);
+  for (const [id, x, d] of [['labL', 60, 0], ['labR', 990, 0.08]]) {
+    const el = $(id), u = E.appleOut(seg(t, T.split + 0.5 + d, T.split + 1.0 + d));
+    el.style.transform = `translate(${x}px,${(300 - 50 + (1 - u) * 14).toFixed(1)}px)`; op(el, u * (1 - seg(t, 30.4, 30.8)));
+  }
+  // caret ownership inside the world
+  if (t >= T.term && t < T.any) {
+    let cell = null, typing = false, t0 = 0;
+    if (ccar && t >= 21.7 && t < 23.0) { const p = ccCell(t, ccar.row, ccar.col); cell = { x: p[0], y: p[1], k: p[2], fs: 22.6, cw: CC_CW, lh: 33 }; typing = ccar.typing; t0 = 22.95; }
+    else if (st.caret && !(t >= 23.0 && t < 23.5) && !(t >= 25.5 && t < 26.95) && !(t >= 28.5 && t < 28.85)) {
+      const p = seatCell(t, st.caret.row - st.top, st.caret.col); cell = { x: p[0], y: p[1], k: p[2], fs: 24, cw: SEAT_CW, lh: 36 }; typing = st.caret.typing; t0 = st.caret.t0;
+    }
+    if (cell && t >= T.term + 0.15) {
+      const k = cell.k * c.z, a = toScreen(c, [cell.x, cell.y]);
+      const h = cell.fs * 0.3 * 0.62 * k;
+      caretSet(a[0], a[1] + (cell.lh * 0.75) * k - h, cell.cw * k, h, typing ? 1 : blink(t, t0));
+    } else if (t >= T.term + 0.15) CARET.o = 0;
+  }
+  // packets: a copy of the caret runs the wire (request → seat, tool_call → caller, result → seat, answer → caller)
+  const pk = $('pk'); let po = 0;
+  for (const [t0, dir] of PK) {
+    if (t >= t0 && t < t0 + 0.5) {
+      const u = E.expoInOut(seg(t, t0, t0 + 0.45));
+      const x = dir === 'R' ? lerp(wx0, wx1, u) : lerp(wx1, wx0, u);
+      const a = toScreen(c, [x, wy]);
+      const w = 22 * c.z * (1 + 1.6 * Math.sin(Math.PI * u)), h = 11 * c.z;
+      pk.style.width = w + 'px'; pk.style.height = h + 'px';
+      pk.style.transform = `translate(${(a[0] - w / 2).toFixed(1)}px,${(a[1] - h / 2).toFixed(1)}px)`;
+      po = 1 - seg(t, t0 + 0.45, t0 + 0.5);
+    }
+  }
+  op(pk, po);
+}
+
+// ───────────────────────── captions (screen space, over the world) ─────────────────────────
+// [t0, t1, x, _, lines[{s, cls}]] — headline lines (a) plus an optional small line (b), one language per cut
+const CAPS = [[17.45, 18.75], [19.6, 20.6], [23.6, 24.45], [25.6, 26.6], [29.05, 30.45]].map(([a, b], i) => {
+  const [hs, sub] = COPY.caps[i];
+  return [a, b, 120, 0, [...hs.map((s) => ({ s, cls: 'a' })), ...(sub ? [{ s: sub, cls: 'b' }] : [])]];
+});
+let capKey = -1;
+function drawCaps(t) {
+  const el = $('cap'); let idx = -1;
+  for (let i = 0; i < CAPS.length; i++) if (t >= CAPS[i][0] - 0.01 && t < CAPS[i][1] + 0.3) idx = i;
+  if (idx !== capKey) { capKey = idx; if (idx >= 0) { const L = CAPS[idx][4]; el.innerHTML = L.map((l) => `<span class="ln ${l.cls}"><span>${esc(l.s)}</span></span>`).join(''); } }
+  if (idx < 0) { op(el, 0); return; }
+  const [t0, t1, x, y] = CAPS[idx];
+  const h = el.children.length;
+  el.style.transform = `translate(${x}px,${(985 - el.offsetHeight).toFixed(0)}px)`;
+  const out = seg(t, t1, t1 + 0.28);
+  op(el, 1 - E.easeIn(out));
+  [...el.children].forEach((ln, i) => {
+    const u = t - (t0 + i * 0.06), y2 = u <= 0 ? 110 : (1 - Math.min(1, sp(0.5, 0)(u))) * 110;
+    ln.firstChild.style.transform = y2 < 0.01 && out === 0 ? 'none' : `translateY(${(y2 - E.expoIn(out) * 40).toFixed(2)}%)`;
+  });
+}
+
+// ───────────────────────── text that is copy, not data (labels, titles, tagline) ─────────────────────────
+function buildText() {
+  $('ttCC').textContent = COPY.ttCC; $('ttSeat').textContent = COPY.ttSeat;
+  $('labLt').textContent = COPY.labL; $('labRt').textContent = COPY.labR; $('labRb').textContent = COPY.labRb;
+  $('tag').textContent = COPY.end;
+}
+
+// ───────────────────────── ANY 31–37: the same request, five different things in the seat ─────────────────────────
+// All real (session/any/, captured 2026-10-23 21:05–21:11 CST, omni2api 0.1.11 / oh-seat 0.2.3, public trycloudflare tunnel):
+// the caller is session/any/ask.sh (curl, model "anything"); each seat ran alone, the caller asked once, the box shows what curl printed.
+const ANY_RQ = [['$ ', 'p'], ['curl …/v1/chat/completions -d ', 'd'], [`'{"model":"anything","messages":[{"role":"user","content":"What time is it?"}]}'`, 'c']];
+const ANY = [
+  { file: 'oh-seat', code: ['$ oh-seat next', 'MESSAGE conv=cnv_01a168dd67657fb289efb29ec532ae78 client=unknown', 'What time is it?',
+      `$ oh-seat reply "It's 9:11 on a Friday night in Shanghai. Go home."`, 'replied conv=cnv_01a168dd67657fb289efb29ec532ae78 (delivered live)'],
+    ans: "It's 9:11 on a Friday night\nin Shanghai. Go home." },
+  { file: 'shout.py', code: ['$ cat shout.py', 'import json, subprocess as sp', 'while True:', '    out = sp.run(["oh-seat", "--json", "next"], capture_output=True, text=True).stdout',
+      '    for ev in map(json.loads, out.splitlines()):', '        if ev["type"] == "message.received":', '            sp.run(["oh-seat", "reply", ev["text"].upper() + "!"])', '$ python3 shout.py'],
+    ans: 'WHAT TIME IS IT?!' },
+  { file: 'loop.sh', code: ['$ cat loop.sh', 'while :; do', '  oh-seat next >/dev/null || continue', '  oh-seat reply "$(date)"', 'done', '$ bash loop.sh'],
+    ans: 'Fri Oct 23 21:05:20 CST 2026' },
+  { file: 'crontab', code: ['$ crontab -l', 'PATH=/home/sandbox/.omni2api/bin:/usr/bin:/bin', 'TZ=Asia/Shanghai',
+      '* * * * * oh-seat next --timeout 50 >/dev/null && oh-seat reply "Cron says $(date +\\%H:\\%M)."'],
+    ans: 'Cron says 21:07.' },
+  { file: 'cow.sh', code: ['$ cat cow.sh', `oh-seat next >/dev/null && cowsay "It's $(date +%H:%M). Moo." | oh-seat reply -`, '$ bash cow.sh'],
+    ans: " __________________\n< It's 21:06. Moo. >\n ------------------\n        \\   ^__^\n         \\  (oo)\\_______\n            (__)\\       )\\/\\\n                ||----w |\n                ||     ||" },
+];
+const ANY_T0 = T.any + 1.0, ANY_ANS = 0.42, ANY_TYPE = 0.24;        // a seat per beat-pair (1 s) from 32; answer lands at +0.42
+const AL = { rqx: 140, rqy: 150, rqfs: 24, rqlh: 34, box: 390, bh: 470, cx: 140, cw: 1010, ax: 1180, aw: 600, cfs: 22, clh: 34, afs: 30, alh: 40, pad: 28, ctop: 72 };
+let ANY_CW = 0.6;   // mono advance / em (measured at ready)
+function buildAny() {
+  const fx = $('fx');
+  const mk = (id, css, html = '') => { const d = document.createElement('div'); d.id = id; d.className = 'abs'; d.style.cssText += css; d.innerHTML = html; fx.appendChild(d); return d; };
+  mk('anyK', `left:${AL.rqx}px;top:96px`, `<span class="lbl" style="font-size:22px">${esc(COPY.anyK)}</span>`);
+  mk('anyR', `left:${AL.rqx}px;top:${AL.rqy}px`, `<div class="mono" id="anyRq" style="font-size:${AL.rqfs}px;line-height:${AL.rqlh}px;white-space:pre;color:var(--paper)"></div>`);
+  mk('anyN', `left:${AL.rqx}px;top:232px`, `<div id="anyNm" style="font-size:${ZH ? 80 : 84}px;font-weight:600;letter-spacing:${ZH ? '1px' : '-1px'};white-space:nowrap;line-height:1.2"></div>`);
+  const box = (id, x, w, lab, inner) => mk(id, `left:${x}px;top:${AL.box}px;width:${w}px;height:${AL.bh}px;border-radius:18px;background:#1B1C20;box-shadow:0 0 0 1px rgba(255,255,255,.07),0 30px 80px rgba(0,0,0,.45);overflow:hidden`,
+    `<div style="position:absolute;left:${AL.pad}px;top:22px;font:600 17px var(--mono);letter-spacing:3px;color:#8A8D94;text-transform:uppercase;white-space:nowrap">${lab}</div>${inner}`);
+  box('anyC', AL.cx, AL.cw, `${esc(COPY.anySeat)} <span id="anyFile" style="color:var(--paper);letter-spacing:1px;text-transform:none;margin-left:10px"></span>`,
+    `<div class="mono" id="anyCode" style="position:absolute;left:${AL.pad}px;top:${AL.ctop}px;font-size:${AL.cfs}px;line-height:${AL.clh}px;white-space:pre;color:#B9BCC2"></div>`);
+  box('anyA', AL.ax, AL.aw, esc(COPY.anyGot),
+    `<div class="mono" id="anyAns" style="position:absolute;left:${AL.pad}px;top:${AL.ctop + 4}px;font-size:${AL.afs}px;line-height:${AL.alh}px;white-space:pre;color:var(--paper)"></div>`);
+  mk('anyI', `left:${AL.rqx}px;top:912px;width:1640px`, `<div id="anyIdx" style="font-size:${ZH ? 30 : 31}px;font-weight:500;letter-spacing:${ZH ? '2px' : '0'};white-space:nowrap"></div>`);
+}
+const anyRqLen = ANY_RQ.reduce((n, p) => n + [...p[0]].length, 0);
+const RQ_T0 = T.any + 0.14, RQ_T1 = T.any + 0.74;
+// caret cell → screen rect, terminal-style (fills the next cell, sits on the baseline)
+function anyCell(x0, y0, fs, lh, row, col) { const cw = fs * ANY_CW, h = fs * 0.3 * 0.62; return { x: x0 + col * cw, y: y0 + row * lh + lh * 0.75 - h, w: cw, h }; }
+const ansOrigin = () => [AL.ax + AL.pad, AL.box + AL.ctop + 4];
+function ansCaret(k, n) {   // caret after the first n chars of seat k's answer
+  const a = [...ANY[k].ans].slice(0, n).join(''), rows = a.split('\n'), [x0, y0] = ansOrigin();
+  return anyCell(x0, y0, AL.afs, AL.alh, rows.length - 1, [...rows[rows.length - 1]].length);
+}
+function ANY_END() { const k = ANY.length - 1; return ansCaret(k, [...ANY[k].ans].length); }
+const anyLast = {};
+function setHTML(id, html) { if (anyLast[id] !== html) { anyLast[id] = html; $(id).innerHTML = html; } }
+function drawAny(t) {
+  const ids = ['anyK', 'anyR', 'anyN', 'anyC', 'anyA', 'anyI'];
+  const on = t >= T.any && t < T.callers + 0.02;
+  if (!on) { ids.forEach((id) => op($(id), 0)); return; }
+  const fo = 1 - seg(t, T.callers - 0.2, T.callers);
+  // kicker + the caller's request (typed by the caret)
+  op($('anyK'), E.easeOut(seg(t, T.any + 0.05, T.any + 0.35)) * fo);
+  op($('anyR'), fo);
+  const n = clamp(Math.floor((t - RQ_T0) / (RQ_T1 - RQ_T0) * anyRqLen) + 1, 0, anyRqLen);
+  let left = n, html = '';
+  for (const [s, c] of ANY_RQ) { const a = [...s], m = Math.min(a.length, left); left -= m; html += `<span style="color:${c === 'p' ? '#7D8088' : c === 'd' ? '#8A8D94' : 'var(--paper)'}">${esc(a.slice(0, m).join(''))}</span>`; }
+  setHTML('anyRq', html);
+  const rqC = anyCell(AL.rqx, AL.rqy, AL.rqfs, AL.rqlh, 0, n);
+  const k = clamp(Math.floor(t - ANY_T0), -1, ANY.length - 1);
+  if (t < ANY_T0) {
+    ids.slice(2).forEach((id) => op($(id), 0));
+    if (t < RQ_T0) { const u = E.appleOut(seg(t, T.any, RQ_T0)), r0 = anyCell(AL.rqx, AL.rqy, AL.rqfs, AL.rqlh, 0, 0); caretSet(lerp(940, r0.x, u), lerp(560, r0.y, u), lerp(140, r0.w, u), lerp(70, r0.h, u), 1); }
+    else caretSet(rqC.x, rqC.y, rqC.w, rqC.h, n < anyRqLen ? 1 : blink(t, RQ_T1));
+    return;
+  }
+  const S = ANY[k], lt = t - (ANY_T0 + k);
+  // boxes rise in with the first seat, then hold; contents swap on every beat-pair
+  const bu = E.appleOut(seg(t, ANY_T0 - 0.08, ANY_T0 + 0.3));
+  for (const id of ['anyC', 'anyA']) { op($(id), bu * fo); $(id).style.transform = `translateY(${((1 - bu) * 40).toFixed(1)}px)`; }
+  const nu = E.appleOut(seg(lt, 0, 0.3));
+  op($('anyN'), nu * fo); $('anyN').style.transform = `translateY(${((1 - nu) * 26).toFixed(1)}px)`;
+  setHTML('anyNm', esc(COPY.anyNames[k]));
+  setHTML('anyFile', esc(S.file));
+  // seat code: rows land top to bottom in the first 0.22 s (soft-wrapped at the pane width, like a terminal)
+  const cols = Math.floor((AL.cw - 2 * AL.pad) / (AL.cfs * ANY_CW));
+  const rows = []; S.code.forEach((l) => wrapRows(l, cols).forEach((w, i) => rows.push({ w, cmd: i === 0 && l.startsWith('$ ') })));
+  const shown = clamp(Math.floor(lt / 0.22 * rows.length) + 1, 1, rows.length);
+  setHTML('anyCode', rows.slice(0, shown).map((r) => (r.cmd ? `<span style="color:#7D8088">$</span> <span style="color:var(--paper)">${esc(r.w.slice(2))}</span>` : esc(r.w))).join('\n'));
+  // the answer the caller printed, typed by the caret
+  const A = [...S.ans], na = clamp(Math.floor((lt - ANY_ANS) / ANY_TYPE * A.length) + 1, 0, A.length);
+  setHTML('anyAns', esc(A.slice(0, na).join('')));
+  // index: the five things, the current one lit
+  setHTML('anyIdx', COPY.anyIdx.map((s, j) => `<span style="color:${j === k ? 'var(--paper)' : j < k ? '#6B6E76' : '#3A3C42'}">${esc(s)}</span>`).join('<span style="color:#3A3C42">  ·  </span>'));
+  op($('anyI'), E.easeOut(seg(t, ANY_T0, ANY_T0 + 0.3)) * fo);
+  // caret: slides from where it was (request end / last answer end) to the answer box, waits, types the answer, blinks
+  const c1 = ansCaret(k, na);
+  if (lt < 0.24) {
+    const from = k === 0 ? anyCell(AL.rqx, AL.rqy, AL.rqfs, AL.rqlh, 0, anyRqLen) : ansCaret(k - 1, [...ANY[k - 1].ans].length);
+    const u = E.appleInOut(seg(lt, 0, 0.24)), to = ansCaret(k, 0);
+    caretSet(lerp(from.x, to.x, u), lerp(from.y, to.y, u), lerp(from.w, to.w, u), lerp(from.h, to.h, u), 1);
+  } else caretSet(c1.x, c1.y, c1.w, c1.h, lt >= ANY_ANS && na < A.length ? 1 : blink(t, lt < ANY_ANS ? ANY_T0 + k + 0.24 : ANY_T0 + k + ANY_ANS + ANY_TYPE));
+}
+
+// ───────────────────────── CALLERS 37–41 ─────────────────────────
+const CALLERS = ['Claude Code', 'Codex', 'OpenCode', 'Pi', 'Reasonix', 'Cline', 'GitHub Copilot CLI', 'Grok CLI', 'ZCode', 'WorkBuddy', 'Trae', 'Qoder', 'DeepSeek Harness'];
+function buildCallers() {
+  kblock('cl0', 0, 330, [{ text: COPY.clLab, cls: 'lbl', t0: T.callers + 0.1, rate: 0 }], { align: 'center' });
+  kblock('cl1', 0, 400, [{ text: 'Claude Code', cls: 'big', t0: 0, rate: 0 }], { align: 'center' });
+  kblock('cl2', 0, 600, [{ text: 'OpenAI Chat Completions  ·  Responses  ·  Anthropic Messages', cls: 'mid', t0: T.callers + 3.0, rate: 0 }], { align: 'center' });
+  KB.cl2.el.children[0].style.fontSize = '34px'; KB.cl2.el.children[0].style.color = 'var(--g2)';
+  KB.cl1.el.children[0].style.fontSize = '150px';
+}
+let clKey = -1;
+function drawCallers(t) {
+  const on = t >= T.callers - 0.02 && t < T.feat + 0.02;
+  for (const id of ['cl0', 'cl1', 'cl2']) op(KB[id].el, 0);
+  if (!on) return;
+  const C = T.callers, S0 = C + 0.25, DT = 0.25;
+  const k = clamp(Math.floor((t - S0) / DT), 0, CALLERS.length - 1);
+  if (k !== clKey) { clKey = k; const ln = KB.cl1.el.children[0]; ln.innerHTML = `<i class="bl" style="display:inline-block;width:0;height:0;vertical-align:baseline"></i>` + [...CALLERS[k]].map((c) => `<span class="ch" style="opacity:1">${esc(c)}</span>`).join(''); KB.cl1.chars[0] = [...ln.querySelectorAll('.ch')]; KB.cl1.lines[0].text = CALLERS[k]; KB.cl1.last = []; }
+  const fo = 1 - seg(t, C + 3.75, C + 4.0);
+  op(KB.cl0.el, E.easeOut(seg(t, C + 0.1, C + 0.4)) * fo);
+  op(KB.cl1.el, (t >= S0 - 0.15 ? 1 : 0) * fo);
+  const pulse = 1.06 - 0.06 * E.expoOut(clamp(((t - S0) % DT) / DT * 2.2));
+  KB.cl1.el.style.transform = t > C + 3.5 ? 'none' : `scale(${pulse.toFixed(4)})`; KB.cl1.el.style.transformOrigin = '960px 90px';
+  op(KB.cl2.el, E.easeOut(seg(t, C + 3.0, C + 3.3)) * fo);
+  KB.cl2.el.style.transform = `translateY(${((1 - E.appleOut(seg(t, C + 3.0, C + 3.5))) * 20).toFixed(1)}px)`;
+  kshow('cl0', t); kshow('cl2', t);
+  const cg = kshow('cl1', 99, 0);
+  if (t < S0) {
+    // carry: the caret leaves the last seat's answer (the cow) for the list
+    const u = E.appleOut(seg(t, T.callers, S0)), a = ANY_END();
+    caretSet(lerp(a.x, cg.x, u), lerp(a.y, cg.base - cg.fs * 0.15, u), lerp(a.w, cg.fs * 0.3, u), lerp(a.h, cg.fs * 0.15, u), 1);
+  } else if (t < C + 3.75) caretOnType(cg, t, 99);
+  else {
+    const u = E.appleInOut(seg(t, C + 3.75, C + 4.1)), g = FEAT_CARET0();
+    caretSet(lerp(cg.x, g.x, u), lerp(cg.base - cg.fs * 0.15, g.y, u), lerp(cg.fs * 0.3, g.w, u), lerp(cg.fs * 0.15, g.h, u), 1);
+  }
+}
+
+// ───────────────────────── FEATURES 35–43 ─────────────────────────
+// 1 strips the harness · 2 real tool calls · 3 streams back · 4 many callers at once (all real data)
+const SIGS = ['Agent(description*: string, prompt*: string, effort: string, isolation: string, model: string, subagent_type: string)',
+  'AskUserQuestion(questions*: {header*: string, multiSelect*: boolean, options*: {…}[], question*: string}[], …)',
+  'Bash(command*: string, dangerouslyDisableSandbox: boolean, description: string, run_in_background: boolean, timeout: number)',
+  'Edit(file_path*: string, new_string*: string, old_string*: string, replace_all: boolean)',
+  'ListAgents(channel: string, q: string)', 'Read(file_path*: string, allow_large: boolean, limit: integer, offset: integer, pages: string)',
+  'ReportFindings(findings*: object[], level: string)', 'ScheduleWakeup(delaySeconds: number, noop: boolean, prompt: string, reason: string, stop: boolean)',
+  'Skill(skill*: string, args: string)', 'ToolSearch(max_results*: number, query*: string)',
+  'Workflow(args: any, description: string, name: string, resumeFromRunId: string, script: string, scriptPath: string, title: string)',
+  'DeferredToolPlaceholder()', 'Write(content*: string, file_path*: string)'];
+// v2: re-captured 2026-10-23 21:12 CST, `curl -N` stream:true against the public tunnel (session/any/stream.sse)
+const SSE = ['Every ', 'word ', 'streams ', 'back ', 'the ', 'moment ', 'the ', 'seat ', 'sends ', 'it.'];
+const SSE_ID = 'chatcmpl-01a168e3606e79f3af3241a020e16e30';
+const CONVS = [['cnv_01a1689b4c33…', 'claude_code', 'What is ./omni2api, in one line?'], ['cnv_01a1689364a5…', 'claude_code', 'How much Rust is in ./omni2api? Lines, please.'],
+  ['cnv_01a16891091d…', 'anthropic sdk', 'Say hi in Chinese.'], ['cnv_01a16890bcab…', 'curl', 'hello'], ['cnv_01a1688fc647…', 'openai sdk', 'How much Rust is in ./omni2api? Lines, please.']];
+const FEATS = COPY.feats.map(([h, cn], i) => ({ t0: T.feat + 2 * i, h, cn }));
+function FEAT_CARET0() { const g = kshow('f0', T.feat + 0.001, 0); return { x: g.x - g.fs * 0.08, y: g.base - g.fs * 0.15, w: g.fs * 0.3, h: g.fs * 0.15 }; }
+function buildFeat() {
+  FEATS.forEach((f, i) => {
+    kblock('f' + i, 140, 230, [typed(f.h, 'big', f.t0 + 0.04, ZH ? 0.42 : [...f.h].length / 46), { text: f.cn, cls: 'cn', t0: f.t0 + 0.4, rate: 0 }]);
+    KB['f' + i].el.children[0].style.fontSize = '92px'; KB['f' + i].el.children[1].style.marginTop = '6px';
+  });
+  const fx = $('fx');
+  const mk = (id, html, css) => { const d = document.createElement('div'); d.id = id; d.className = 'abs'; d.innerHTML = html; d.style.cssText += css; fx.appendChild(d); return d; };
+  mk('f0a', `<div class="mono" style="font-size:19px;line-height:30px;color:#7D8088;white-space:pre">${SIGS.map((s) => esc('  ' + s)).join('\n')}</div>`, 'left:140px;top:570px;width:1700px;overflow:hidden');
+  mk('f0b', `<div class="mono" style="font-size:20px;color:var(--graphite);letter-spacing:1px">${esc(COPY.f0b)}</div>`, 'left:140px;top:520px');
+  mk('f0c', `<div class="mono" style="font-size:44px;color:var(--paper)">What is ./omni2api, in one line?</div>`, 'left:140px;top:700px');
+  mk('f1a', `<div class="mono" style="font-size:30px;line-height:46px;color:#B9BCC2;white-space:pre"><span style="color:#7D8088">$</span> <span style="color:var(--paper)">oh-seat tool bash command="find omni2api/server/src … | wc -l"</span></div>`, 'left:140px;top:540px');
+  mk('f1b', `<div class="mono" style="font-size:27px;line-height:42px;color:#B9BCC2;white-space:pre">${esc('{ "finish_reason": "tool_calls",\n  "tool_calls": [{ "id": "call_01a16890189a7db19272774b964e3480",\n    "function": { "name": "bash",\n      "arguments": "{\\"command\\":\\"find omni2api/server/src … | wc -l\\"}" } }] }')}</div>`, 'left:140px;top:640px');
+  mk('f1c', `<div class="mono" style="font-size:22px;color:var(--graphite)">${esc(COPY.f1c)}</div>`, 'left:140px;top:860px');
+  mk('f2a', `<div class="mono" id="sseLines" style="font-size:18px;line-height:28px;color:#5E6168;white-space:pre"></div>`, 'left:140px;top:520px;width:1700px;height:260px;overflow:hidden');
+  mk('f2b', `<div id="sseBig" style="font-size:56px;font-weight:600;letter-spacing:-.6px;white-space:nowrap"></div>`, 'left:140px;top:800px');
+  mk('f3a', `<div class="mono" id="convs" style="font-size:28px;line-height:54px;color:#B9BCC2;white-space:pre"></div>`, 'left:140px;top:550px');
+}
+function drawFeat(t) {
+  const on = t >= T.feat && t < T.tag + 0.02;
+  for (let i = 0; i < 4; i++) op(KB['f' + i].el, 0);
+  for (const id of ['f0a', 'f0b', 'f0c', 'f1a', 'f1b', 'f1c', 'f2a', 'f2b', 'f3a']) op($(id), 0);
+  if (!on) return;
+  const i = clamp(Math.floor((t - T.feat) / 2), 0, 3), f = FEATS[i], lt = t - f.t0;
+  const B = KB['f' + i];
+  const fo = 1 - seg(lt, 1.82, 1.98);
+  op(B.el, fo);
+  const cg = kshow('f' + i, t, 0);
+  B.el.children[1].style.opacity = E.easeOut(seg(lt, 0.4, 0.7)).toFixed(3);
+  const isLast = i === 3;
+  if (lt < 1.82 || isLast) caretOnType(cg, t, f.t0 + 0.5);
+  else { // the caret slides to the next heading's start
+    const g = kshow('f' + (i + 1), FEATS[i + 1].t0 + 0.001, 0);
+    const u = E.appleInOut(seg(lt, 1.82, 2.0));
+    caretSet(lerp(cg.x, g.x - g.fs * 0.08, u), lerp(cg.base - cg.fs * 0.15, g.base - g.fs * 0.15, u), cg.fs * 0.3, cg.fs * 0.15, 1);
+  }
+  const rise = (el, a, d = 24) => { const u = E.appleOut(seg(lt, a, a + 0.45)); op(el, u * fo); el.style.transform = `translateY(${((1 - u) * d).toFixed(1)}px)`; };
+  if (i === 0) {
+    rise($('f0b'), 0.2); rise($('f0a'), 0.25);
+    // the 13 schemas compress into the one line the user typed
+    const c = E.expoInOut(seg(lt, 0.85, 1.35));
+    const a = $('f0a'); a.style.transform = `translateY(${(120 * c).toFixed(1)}px) scaleY(${(1 - 0.97 * c).toFixed(4)})`; a.style.transformOrigin = '0 0';
+    op(a, (1 - seg(lt, 1.2, 1.4)) * E.easeOut(seg(lt, 0.25, 0.5)) * fo);
+    op($('f0b'), E.easeOut(seg(lt, 0.2, 0.5)) * (1 - seg(lt, 0.85, 1.1)) * fo);
+    const u = E.appleOut(seg(lt, 1.25, 1.6)); op($('f0c'), u * fo); $('f0c').style.transform = `translateY(${((1 - u) * -30).toFixed(1)}px)`;
+  } else if (i === 1) {
+    rise($('f1a'), 0.15);
+    const u = E.appleOut(seg(lt, 0.7, 1.15)); op($('f1b'), u * fo); $('f1b').style.transform = `translateY(${((1 - u) * 30).toFixed(1)}px)`;
+    rise($('f1c'), 1.05, 12);
+  } else if (i === 2) {
+    // real SSE chunks from `curl -N …/chat/completions` (model "anything"), word by word on 16ths
+    const k = clamp(Math.floor((lt - 0.45) / 0.105) + 1, 0, SSE.length);
+    const lines = []; for (let j = 0; j < k; j++) lines.push(`data: {"id":"${SSE_ID}","object":"chat.completion.chunk","model":"anything","choices":[{"index":0,"delta":{"content":${JSON.stringify(SSE[j])}}}]}`);
+    if (k === SSE.length && lt > 1.75) lines.push('data: [DONE]');
+    $('sseLines').textContent = lines.slice(-9).join('\n');
+    rise($('f2a'), 0.3, 10);
+    op($('f2b'), fo);
+    const big = $('sseBig'); const txt = SSE.slice(0, k).join('');
+    if (big.dataset.k !== String(k)) { big.dataset.k = k; big.innerHTML = `<i class="bl" style="display:inline-block;width:0;height:0;vertical-align:baseline"></i>${esc(txt)}<i class="end" style="display:inline-block;width:0;height:0"></i>`; }
+  } else if (i === 3) {
+    const n = clamp(Math.floor((lt - 0.35) / 0.12) + 1, 0, CONVS.length);
+    const el = $('convs');
+    if (el.dataset.n !== String(n)) { el.dataset.n = n; el.innerHTML = CONVS.slice(0, n).map((c, j) => `<span style="color:${j === 0 ? 'var(--paper)' : '#7D8088'}">${j === 0 ? '*' : ' '} ${c[0]}</span>  <span style="color:var(--paper)">${c[1].padEnd(14)}</span>  ${esc(c[2])}`).join('\n'); }
+    op($('f3a'), (n > 0 ? 1 : 0) * fo);
+  }
+  // the stream's caret rides the big streamed line instead of the heading
+  if (i === 2 && lt >= 0.45 && lt < 1.82) {
+    const big = $('sseBig'), bl = big.querySelector('.bl'), en = big.querySelector('.end');
+    if (bl && en) { const b = bl.getBoundingClientRect(), e = en.getBoundingClientRect(); const fs = 56; caretSet(e.left + fs * 0.08, b.top - fs * 0.15, fs * 0.3, fs * 0.15, 1); }
+  }
+}
+
+// ───────────────────────── TAG 43–45 ─────────────────────────
+function buildTag() {
+  kblock('tg', 0, 420, [typed(COPY.tag, 'big', T.tag + 0.12, 0.74)], { align: 'center' });
+  KB.tg.el.children[0].style.fontSize = '120px';
+}
+function drawTag(t) {
+  const on = t >= T.tag && t < T.end + 0.02; op(KB.tg.el, 0);
+  if (!on) return;
+  const G = T.tag;
+  op(KB.tg.el, 1 - seg(t, G + 1.62, G + 1.75));
+  const cg = kshow('tg', t, 0);
+  if (t < G + 0.12) { const g = kshow('tg', G + 0.12, 0); kshow('tg', t, 0); /* v2: re-hide the probe glyph (v1 flashed it) */ const pg = kshow('f3', G - 0.1, 0); const u = E.appleInOut(seg(t, T.tag, G + 0.12)); caretSet(lerp(pg.x, g.x - g.fs * 0.08, u), lerp(pg.base - pg.fs * 0.15, g.base - g.fs * 0.15, u), lerp(pg.fs * 0.3, g.fs * 0.3, u), lerp(pg.fs * 0.15, g.fs * 0.15, u), 1); }
+  else if (t < G + 1.55) caretOnType(cg, t, G + 1.0);
+  else {
+    // carry → the caret swells to fill the frame: we are inside the cursor again (3D reprise)
+    const w = cg.fs * 0.3, h = cg.fs * 0.15;
+    caretZoom(960, 540, 2100, 1240, cg.x + w / 2, cg.base - h / 2, w, h, 1 - E.expoIn(seg(t, G + 1.55, T.end)));
+  }
+}
+
+// ───────────────────────── 3D + END ─────────────────────────
+const LK = { s: 880 / 1080.3, x0: 500.45, y0: 407.42 };
+const GL = [103.2, 260.8, 380.8, 423.8, 540.62, 656.02, 781.22, 820.82];   // wordmark glyph right edges (wordmark units)
+function buildLock() {
+  fetch('lockup.svg').then((r) => r.text()).then((s) => {
+    const w = $('lockwrap');
+    w.innerHTML = s.replace('<svg ', '<svg id="lock" ');
+    const svg = w.querySelector('svg'); const paths = svg.querySelectorAll('path');
+    paths[0].id = 'lring'; paths[1].id = 'lcur'; paths[2].id = 'lword';
+    const NS = 'http://www.w3.org/2000/svg';
+    const cp = document.createElementNS(NS, 'clipPath'); cp.id = 'wclip'; const r = document.createElementNS(NS, 'rect'); r.id = 'wrect';
+    r.setAttribute('x', -4); r.setAttribute('y', -170); r.setAttribute('height', 240); r.setAttribute('width', 0); cp.appendChild(r);
+    const defs = document.createElementNS(NS, 'defs'); defs.appendChild(cp); svg.insertBefore(defs, svg.firstChild);
+    paths[2].setAttribute('clip-path', 'url(#wclip)');
+  });
+}
+function draw3D(t) {
+  const img = $('img3d');
+  if (t < T.thesis) { setSrc(img, `frames/open/${pad4(clamp(Math.round(t * 30), 0, OPEN_N - 1))}.jpg`); op(img, 1); }
+  else if (t >= T.end && t < T.end + 2.75) { setSrc(img, `frames/end/${pad4(clamp(Math.round((t - T.end) * 30), 0, END_N - 1))}.jpg`); op(img, 1 - seg(t, T.end + 2.45, T.end + 2.7)); }
+  else op(img, 0);
+}
+function drawEnd(t) {
+  const w = $('lockwrap'), svg = $('lock');
+  op($('fade'), seg(t, T.dur - 0.7, T.dur));
+  if (!svg || t < T.end + 2.4) { op(w, 0); op($('tag'), 0); op($('url'), 0); return; }
+  op(w, 1);
+  svg.style.transform = `translate(${LK.x0}px,${LK.y0}px) scale(${LK.s})`; svg.style.position = 'absolute'; svg.style.transformOrigin = '0 0';
+  // the cursor types its own name along the baseline, then goes home
+  const T0 = T.end + 2.75, DT = 0.125;
+  const k = Math.floor((t - T0) / DT) + 1;          // glyphs typed
+  let cx = 175.99, rw = 0;
+  if (t >= T0) {
+    const n = clamp(k, 0, 8);
+    rw = n > 0 ? GL[n - 1] + 8 : 0;
+    const prev = n > 1 ? GL[n - 2] : null;
+    const tgt = n > 0 ? 283.48 + GL[n - 1] + 14 : 175.99;
+    const from = n > 1 ? 283.48 + GL[n - 2] + 14 : 175.99;
+    const u = E.expoOut(clamp(((t - T0) - (n - 1) * DT) / (DT * 0.7)));
+    cx = n >= 1 ? lerp(from, tgt, u) : 175.99;
+    const back = T0 + 8 * DT + 0.18;
+    if (t >= back) cx = lerp(283.48 + GL[7] + 14, 175.99, E.expoInOut(seg(t, back, back + 0.42)));
+  }
+  if (t >= T0 && t < T0 + 8 * DT + 0.18) rw = Math.max(0, cx - 283.48 - 14 + 2);
+  if (t >= T0 + 8 * DT + 0.18) rw = GL[7] + 8;
+  $('wrect').setAttribute('width', rw.toFixed(2));
+  $('lcur').setAttribute('transform', `translate(${(cx - 175.99).toFixed(2)} 0)`);
+  // wink: two blinks once home (o_ is a face)
+  const tw = T0 + 8 * DT + 0.18 + 0.42;
+  const wink = (t > tw + 1.3 && t < tw + 1.42) || (t > tw + 1.62 && t < tw + 1.74);
+  $('lcur').style.opacity = wink ? 0 : 1;
+  const tg = E.appleOut(seg(t, tw + 0.05, tw + 0.75));
+  op($('tag'), tg); $('tag').style.transform = `translateY(${((1 - tg) * 16).toFixed(1)}px)`;
+  op($('url'), 0.95 * E.easeOut(seg(t, tw + 0.45, tw + 1.05)));
+}
+
+// ───────────────────────── seek ─────────────────────────
+window.__seek = async (t) => {
+  pending.length = 0; CARET.o = 0;
+  draw3D(t); drawThesis(t); drawQuote(t); drawWorld(t); drawCaps(t); drawAny(t); drawCallers(t); drawFeat(t); drawTag(t); drawEnd(t);
+  if (t < T.thesis || t >= T.end) CARET.o = 0;
+  drawCaret();
+  if (Q.has('hud')) { $('hud').style.display = 'block'; $('hud').textContent = t.toFixed(3); }
+  await Promise.all(pending);
+  return true;
+};
+window.__meta = { dur: T.dur, fps: 30 };
+window.__events = () => {
+  const ev = []; const add = (t, kind, x = {}) => ev.push({ t, kind, ...x });
+  add(2.0, 'morph'); add(6.0, 'carry');
+  const typeEv = (id, step) => { const B = KB[id]; B.lines.forEach((l) => { if (!l.rate) return; const n = [...l.text].length; for (let i = 0; i < n; i += step) add(l.t0 + i / l.rate, 'key'); }); };
+  ['th1', 'th2', 'q', 'tg', 'f0', 'f1', 'f2', 'f3'].forEach((id) => typeEv(id, ZH ? 1 : 2));
+  for (let i = 0; i < anyRqLen; i += 4) add(RQ_T0 + i / anyRqLen * (RQ_T1 - RQ_T0), 'key', { soft: 1 });
+  add(12.0, 'paper'); add(15.5, 'enter'); add(16.0, 'carry');
+  for (const e of SEAT) if (e.cmd) { const n = [...e.cmd].length; const step = Math.max(1, Math.round(e.rate / 22)); for (let i = 0; i < n; i += step) add(e.at + i / e.rate, 'key', { soft: 1 }); add(e.at + n / e.rate + 0.12, 'enter', { soft: 1 }); }
+  for (let i = 0; i < ASK.length; i += 2) add(21.85 + i / 30, 'key', { soft: 1 }); add(23.0, 'enter', { soft: 1 });
+  add(T.split, 'slide'); for (const [t0] of PK) add(t0, 'packet');
+  add(16.85, 'out'); add(23.5, 'out'); add(26.95, 'out'); add(28.95, 'out');
+  add(T.any, 'carry'); for (let k = 0; k < ANY.length; k++) { add(ANY_T0 + k, 'slot', { k }); add(ANY_T0 + k + ANY_ANS, 'out'); }
+  add(T.callers, 'carry'); for (let k = 0; k < 13; k++) add(T.callers + 0.25 + k * 0.25, 'hit', { k });
+  for (const f of FEATS) add(f.t0, 'feat'); for (let j = 0; j < SSE.length; j++) add(T.feat + 4.45 + j * 0.105, 'tok', { j });
+  add(T.tag + 1.55, 'swell'); add(T.end, 'carry');
+  for (let k = 0; k < 8; k++) add(T.end + 2.75 + k * 0.125, 'type8', { k }); add(T.end + 2.75 + 1.18, 'home');
+  return ev;
+};
+window.__motion = (t0, t1) => {
+  // camera speed in px over the shutter (world section), used by the renderer to decide sub-frame blur
+  if (t1 < T.term || t0 > T.any) return 0;
+  let m = 0;
+  for (let k = 0; k < 4; k++) {
+    const a = camAt(t0 + (t1 - t0) * k / 4), b = camAt(t0 + (t1 - t0) * (k + 1) / 4);
+    for (const p of [[300, 200], [1600, 900], [960, 540], [60, 300], [1860, 790]]) { const pa = toScreen(a, p), pb = toScreen(b, p); m = Math.max(m, Math.hypot(pb[0] - pa[0], pb[1] - pa[1])); }
+  }
+  return m;
+};
+window.__ready = (async () => {
+  await document.fonts.load('600 60px "PingFang SF"'); await document.fonts.load('500 60px "PingFang SF"'); await document.fonts.load('400 20px JBM'); await document.fonts.load('700 20px JBM'); await document.fonts.load('400 20px DJM');
+  await document.fonts.ready;
+  CCD = await (await fetch('data/cc.json')).json();
+  // v2: the real streamed answer is cut before its last clause ("Right now, that's me." framed the seat as a person)
+  for (const sp_ of CCD.done[15]) sp_.t = sp_.t.replace("Right now, that's me.", '…');
+  { const m = document.createElement('span'); m.className = 'mono'; m.style.fontSize = '100px'; m.textContent = 'M'.repeat(50); document.body.appendChild(m); ANY_CW = m.offsetWidth / 5000; m.remove(); }
+  for (const [id, set] of [['seatpre', (v) => (SEAT_CW = v)], ['ccpre', (v) => (CC_CW = v)]]) {
+    const m = document.createElement('span'); m.textContent = 'M'.repeat(200); $(id).appendChild(m); set(m.offsetWidth / 200); m.remove();
+  }
+  console.log('cw', SEAT_CW, CC_CW);
+  buildText(); buildThesis(); buildQuote(); buildAny(); buildCallers(); buildFeat(); buildTag(); buildLock(); buildCam();
+  await new Promise((r) => setTimeout(r, 300));
+  await window.__seek(Number(Q.get('t') || 0));
+  return true;
+})();
+</script>
+</body></html>

@@ -1,0 +1,2 @@
+MESSAGE conv=cnv_01a1689364737b42b7fc8f1d1bb3c1bb client=claude_code  AUX: answer with JSON {"title": "..."}; reply with -c cnv_01a1689364737b42b7fc8f1d1bb3c1bb
+How much Rust is in ./omni2api? Lines, please.

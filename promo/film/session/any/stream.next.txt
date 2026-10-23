@@ -1,0 +1,4 @@
+NEW CONVERSATION conv=cnv_01a168e3606e79f3af324186d4b5ac59
+MESSAGE conv=cnv_01a168e3606e79f3af324186d4b5ac59 client=unknown
+stream me one line
+cnv_01a168e3606e79f3af324186d4b5ac59 declared no tools (system prompt 0 chars): reply only

@@ -1,0 +1,17 @@
+
+Omni2API is up.
+
+  Caller config (OpenAI-compatible, or Anthropic at the same base):
+    base_url  (local)  http://127.0.0.1:8080/v1
+    base_url  (public) https://temp-unsubscribe-shipments-exclusion.trycloudflare.com/v1
+    api_key            ohk_0063e61e••••••••
+    model              omni2api
+
+  Seat (the thing that answers) — run in another terminal:
+    OH_SEAT_URL=http://127.0.0.1:8080 OH_SEAT_KEY=ohk_bddac5d6•••••••• oh-seat next
+
+  Saved to /home/sandbox/.omni2api/endpoint.json
+
+  Running in the background (pid 2588). Log: /home/sandbox/.omni2api/up.log
+  Stop: omni2api down    Status: omni2api status
+

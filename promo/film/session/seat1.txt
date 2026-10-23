@@ -1,0 +1,5 @@
+NEW CONVERSATION conv=cnv_01a1688fc64770b08145103d11440274
+MESSAGE conv=cnv_01a1688fc64770b08145103d11440274 client=unknown
+How much Rust is in ./omni2api? Lines, please.
+tools in cnv_01a1688fc64770b08145103d11440274 (1; * = required; system prompt 42 chars, `oh-seat caps --full`):
+  bash(command*: string)

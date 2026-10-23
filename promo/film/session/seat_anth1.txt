@@ -1,0 +1,4 @@
+NEW CONVERSATION conv=cnv_01a16891091d7e5191a80451edc2b81a
+MESSAGE conv=cnv_01a16891091d7e5191a80451edc2b81a client=unknown
+Say hi in Chinese.
+cnv_01a16891091d7e5191a80451edc2b81a declared no tools (system prompt 0 chars): reply only

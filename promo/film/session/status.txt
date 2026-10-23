@@ -1,0 +1,15 @@
+
+Omni2API is up.
+
+  Caller config (OpenAI-compatible, or Anthropic at the same base):
+    base_url  (local)  http://127.0.0.1:8080/v1
+    base_url  (public) https://sms-payday-pump-advocate.trycloudflare.com/v1
+    api_key            ohk_••••••••
+    model              omni2api
+
+  Seat (the thing that answers) — run in another terminal:
+    OH_SEAT_URL=http://127.0.0.1:8080 OH_SEAT_KEY=ohk_•••••••• oh-seat next
+
+  Saved to /home/sandbox/.omni2api/endpoint.json
+
+  Running (pid 1336).

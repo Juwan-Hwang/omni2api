@@ -1,0 +1,3 @@
+PATH=/home/sandbox/.omni2api/bin:/usr/bin:/bin
+TZ=Asia/Shanghai
+* * * * * oh-seat next --timeout 50 >/dev/null && oh-seat reply "Cron says $(date +\%H:\%M)."

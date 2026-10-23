@@ -1,0 +1,2 @@
+{"client":"unknown","conversation_id":"cnv_01a168dd67657fb289efb29ec532ae78","cursor":1792760699274,"data":{"agent_id":"agt_caller","agent_name":"agt_caller","client":"unknown"},"type":"conversation.started"}
+{"client":"unknown","conversation_id":"cnv_01a168dd67657fb289efb29ec532ae78","cursor":1792760699275,"from":"agt_caller","kind":"chat","message_id":"msg_01a168dd67657fb289efb2829e759855","text":"What time is it?","type":"message.received"}

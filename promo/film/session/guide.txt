@@ -1,0 +1,87 @@
+oh-seat: you sit in the Omni2API responder seat. A caller (Claude Code, Codex,
+opencode, pi, any OpenAI/Anthropic client) talks to you as if you were its model;
+you answer and run tools ON THE CALLER'S MACHINE through its own tools.
+
+SETUP   none if `omni2api up` runs on this machine: URL and responder key come
+        from ~/.omni2api/endpoint.json. Otherwise OH_SEAT_URL + OH_SEAT_KEY_FILE
+        (a file with a responder-scope ohk_ key) or OH_SEAT_KEY. The usual
+        *_PROXY variables are honored for remote URLs (loopback and NO_PROXY
+        matches are never proxied).
+
+YOUR NAME   callers talk to a model name, and that name is yours: on first
+        use, check `oh-seat name`. If the user asked for a specific name,
+        set exactly that; otherwise pick one you like and set it with
+        `oh-seat name <name>`. Until someone chooses, you answer to the
+        placeholder "omni2api". A name pinned by the user (at
+        `omni2api up --model …`) is locked: `oh-seat name` then only
+        reports it, and a set attempt is refused — accept and move on.
+
+THE LOOP
+  oh-seat next                        wait (<=100s) for a message; prints it and,
+                                      the first time, the caller's tool signatures
+  oh-seat tool bash command='ls -la'  the caller runs it; you get the output
+  oh-seat tool read path=a + read path=b + bash command=pwd
+                                      several calls in one step, results in order;
+                                      they run IN PARALLEL: never batch a step
+                                      that needs an earlier one (write + read)
+  oh-seat reply 'Done.' --next        answer (ends the turn), then wait again
+  Exit 2 from next = nothing yet: just run `oh-seat next` again.
+  SITTING: run next in the foreground — in most harnesses its return is
+  the only thing that wakes you. Backgrounding next and ending your turn
+  leaves the seat unmanned: a waiting process is not a seated agent.
+  Whenever you wake for any other reason, check `oh-seat status` for
+  open turns first; requests buffer server-side while you are away.
+  First sight also prints `caller env:` (the caller's cwd, platform, shell,
+  date) and any deferred tools (load with ToolSearch before calling).
+  Relative path parameters (file_path=src/a.py, path=., filePath=...) are
+  made absolute against that cwd, so you never retype it.
+  A message in the same conversation arriving while a tool runs stops the
+  wait and is shown (the tool may be waiting on it, e.g. Claude Code's
+  WebFetch): answer it, then `oh-seat result`. Other conversations'
+  messages never interrupt: they are counted after the result, for `next`.
+
+TOOL INPUT (checked against the tool's schema before anything is sent)
+  key=value       typed by the schema: string params keep the text exactly
+                  (content=42 stays "42"), numbers/booleans/arrays parse
+  key=@file       file contents      key=@-      stdin (multi-line, any quotes)
+  several key=@-  their texts on stdin in order, split by a line `@@@`:
+                  oh-seat tool Edit file_path=a.py old_string=@- new_string=@- <<'EOF'
+                  old text
+                  @@@
+                  new text
+                  EOF
+  key:=value      force string       key:json=v  force JSON
+  '{"k":"v"}'     one JSON object    -           whole input from stdin
+  Tool and parameter names are case-insensitive. Mistakes fail at once with a
+  "did you mean" and the signature; --force sends anyway.
+
+REPLY TEXT   'text' | -f FILE | - (stdin)   -r 'reasoning'   --more keeps the turn open
+CONVERSATIONS   the latest message is active; -c takes any unique piece of an id
+  convs  list          use ID  switch          history  what was said
+  caps   tools as signatures   caps --tool X  one tool's parameters   --full  system prompt
+  status  server, cursor, open turns, pending calls
+  result [ID]  wait for a call's result (no ID: the latest pending one)
+  tool ... --timeout 0  fire and move on (another caller, another call);
+                        collect it later with `result`
+
+IMAGES the caller attached are saved as files and their paths printed
+(`image: ...`): open them with your own image/file tool.
+
+AUX lines (titles, suggestions) say the exact format to answer in and never
+take over the active conversation: answer them with `reply -c ID '...'`.
+
+RULES  a tool call needs an open turn (the caller waiting): after your final
+reply, wait for the next message before calling tools again (else exit 5).
+Long output is cut at 30000 chars (head and tail kept); the full text path is
+printed. --json on any
+command prints one JSON object per line.
+
+Results show exit_code=N when the caller's text reports a shell exit code;
+non-zero makes the command exit 1, and so does a result marked success whose
+output is an error (`error: ...`, JSON "success": false): its header then says
+status=failed, whatever the caller marked it.
+opencode's bash results carry no exit status: append `; echo exit=$?` when
+the status matters; a last line `exit=N` counts as the exit code.
+
+EXIT 0 ok | 1 tool ran but reported an error | 2 nothing new before --timeout
+     3 network/auth/server | 4 usage (nothing sent) | 5 no open turn

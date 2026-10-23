@@ -1,0 +1,1 @@
+nothing new in 40s (run `oh-seat next` again)

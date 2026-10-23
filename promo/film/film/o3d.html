@@ -1,0 +1,221 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>html,body{margin:0;background:#121316;overflow:hidden}canvas{display:block}</style>
+<script type="importmap">{"imports":{"three":"./node_modules/three/build/three.module.js","three/addons/":"./node_modules/three/examples/jsm/"}}</script>
+</head><body>
+<script type="module">
+// omni2api "Prompt" symbol in 3D. Units = the symbol master's units (viewBox 273×196):
+// ring centre (98,98), outer R 74, inner R 40 (stroke 34, mid-radius 57); cursor 62×31 at x 187–249, y 139–170.
+// World origin = master point (136.5, 98), y up. The prompt chevron ">" morphs into the ring (the > of a prompt became an o).
+import * as THREE from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+const Q = new URLSearchParams(location.search);
+const W = 1920, H = 1080, SHOT = Q.get('shot') || 'open';
+const INK = '#121316', PAPER = '#F3F1EC', SIGNAL = '#FF5B1F';
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(1); renderer.setSize(W, H);
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(INK);
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.03).texture;
+
+const OX = 136.5, OY = 98;
+const RC = [98 - OX, 0], RMID = 57, SW = 34, DEPTH = 34, CH = 5;    // chamfer
+const CUR = { x: 218 - OX, y: -(154.5 - OY), w: 62, h: 31 };
+
+// ── ring / chevron sweep ──
+const NS = 241;
+// chevron centreline in master coords: ends (64,30) & (64,166), apex (140,98) — sits in the ring's box
+const CA = [64 - OX, -(30 - OY)], CB = [140 - OX, 0], CC = [64 - OX, -(166 - OY)];
+// filleted chevron (r = 9 at the apex), sampled by arc length
+const CHEV = (() => {
+  const r = 22, L1 = Math.hypot(CB[0] - CA[0], CB[1] - CA[1]);
+  const d1 = [(CB[0] - CA[0]) / L1, (CB[1] - CA[1]) / L1], d2 = [(CC[0] - CB[0]) / L1, (CC[1] - CB[1]) / L1];
+  const turn = Math.acos(d1[0] * d2[0] + d1[1] * d2[1]);           // deflection angle
+  const tl = r * Math.tan(turn / 2);
+  const pts = [];
+  const P1 = [CB[0] - d1[0] * tl, CB[1] - d1[1] * tl], P2 = [CB[0] + d2[0] * tl, CB[1] + d2[1] * tl];
+  const n1 = [-d1[1], d1[0]], n2 = [-d2[1], d2[0]];
+  for (let i = 0; i <= 200; i++) { const u = i / 200; pts.push([CA[0] + (P1[0] - CA[0]) * u, CA[1] + (P1[1] - CA[1]) * u, n1[0], n1[1]]); }
+  const cen = [P1[0] - n1[0] * r, P1[1] - n1[1] * r];               // centre on the inner side
+  const a0 = Math.atan2(n1[1], n1[0]);
+  for (let i = 1; i < 40; i++) { const a = a0 - turn * i / 40; pts.push([cen[0] + r * Math.cos(a), cen[1] + r * Math.sin(a), Math.cos(a), Math.sin(a)]); }
+  for (let i = 0; i <= 200; i++) { const u = i / 200; pts.push([P2[0] + (CC[0] - P2[0]) * u, P2[1] + (CC[1] - P2[1]) * u, n2[0], n2[1]]); }
+  const cum = [0]; for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+  return { pts, cum, L: cum[cum.length - 1] };
+})();
+function chevron(s) {
+  const L = s * CHEV.L, c = CHEV.cum; let lo = 0, hi = c.length - 1;
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (c[m] <= L) lo = m; else hi = m; }
+  const u = (L - c[lo]) / Math.max(1e-9, c[hi] - c[lo]), A = CHEV.pts[lo], B = CHEV.pts[hi];
+  const nx = A[2] + (B[2] - A[2]) * u, ny = A[3] + (B[3] - A[3]) * u, nl = Math.hypot(nx, ny);
+  return [A[0] + (B[0] - A[0]) * u, A[1] + (B[1] - A[1]) * u, nx / nl, ny / nl, 1];
+}
+function circle(s) { const th = Math.PI - 2 * Math.PI * s; return [RC[0] + RMID * Math.cos(th), RC[1] + RMID * Math.sin(th), Math.cos(th), Math.sin(th), 1]; }
+// profile loop: (a across the stroke 0=inner..1=outer, z)
+const PRO = [[1, DEPTH / 2 - CH], [1 - CH / SW, DEPTH / 2], [CH / SW, DEPTH / 2], [0, DEPTH / 2 - CH], [0, -DEPTH / 2 + CH], [CH / SW, -DEPTH / 2], [1 - CH / SW, -DEPTH / 2], [1, -DEPTH / 2 + CH]];
+const ringMat = new THREE.MeshPhysicalMaterial({ color: new THREE.Color('#D9D6CF'), roughness: 0.55, metalness: 0.0, clearcoat: 0.3, clearcoatRoughness: 0.4 });
+const ringGeo = new THREE.BufferGeometry();
+const nE = PRO.length, vPer = nE * 2 * NS;
+const pos = new Float32Array((vPer + 8 * 3) * 3);
+const idx = [];
+for (let e = 0; e < nE; e++) for (let i = 0; i < NS - 1; i++) {
+  const b = e * 2 * NS; const a0 = b + i * 2, a1 = a0 + 1, b0 = a0 + 2, b1 = a0 + 3;
+  idx.push(a0, b0, a1, a1, b0, b1);
+}
+// end caps (two octagons, fan) — vertices after the strips
+const cap0 = vPer, cap1 = vPer + 8;
+for (let k = 1; k < 7; k++) { idx.push(cap0, cap0 + k + 1, cap0 + k); idx.push(cap1, cap1 + k, cap1 + k + 1); }
+ringGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+ringGeo.setIndex(idx);
+const ring = new THREE.Mesh(ringGeo, ringMat);
+const ringGrp = new THREE.Group(); ringGrp.add(ring); scene.add(ringGrp);
+const ss = (x) => x * x * (3 - 2 * x);
+const MO_k = (x) => (x <= 0 ? 0 : x >= 1 ? 1 : 1 - Math.pow(1 - x, 3.2) * (1 - x * 0.0));
+function buildRing(u) {
+  // u: 0 = chevron ">", 1 = ring "o"
+  const P = [];
+  const closed = ss(clamp((u * 1.35 - 0.35) / 0.86)) > 0.985;
+  for (let i = 0; i < NS; i++) {
+    const s = i / (NS - 1);
+    const c = chevron(s), o = circle(s);
+    // ends close last: the arms bend from the apex outward
+    const w = clamp((u * 1.35 - Math.abs(s - 0.5) * 0.7) / 0.86);
+    const k = closed ? 1 : ss(w);
+    const x = lerp(c[0], o[0], k), y = lerp(c[1], o[1], k);
+    let nx = lerp(c[2] * c[4], o[2], k), ny = lerp(c[3] * c[4], o[3], k);
+    P.push([x, y, nx, ny]);
+  }
+  for (let e = 0; e < nE; e++) {
+    const p0 = PRO[e], p1 = PRO[(e + 1) % nE];
+    for (let i = 0; i < NS; i++) {
+      const [x, y, nx, ny] = P[i];
+      for (let q = 0; q < 2; q++) {
+        const p = q ? p1 : p0, off = (p[0] - 0.5) * SW;
+        const j = (e * 2 * NS + i * 2 + q) * 3;
+        pos[j] = x + nx * off; pos[j + 1] = y + ny * off; pos[j + 2] = p[1];
+      }
+    }
+  }
+  for (const [ci, i] of [[cap0, 0], [cap1, NS - 1]]) {
+    const [x, y, nx, ny] = P[i];
+    for (let e = 0; e < 8; e++) { const off = (PRO[e][0] - 0.5) * SW; const j = (ci + e) * 3; pos[j] = x + nx * off; pos[j + 1] = y + ny * off; pos[j + 2] = PRO[e][1]; }
+  }
+  if (ss(clamp((u * 1.35 - 0.35) / 0.86)) > 0.9) for (let j = vPer * 3; j < pos.length; j++) pos[j] = 0;
+  ringGeo.attributes.position.needsUpdate = true;
+  ringGeo.computeVertexNormals();
+  if (closed) {   // weld the seam's shading: average the normals of the coincident first/last ring of vertices
+    const nr = ringGeo.attributes.normal.array;
+    for (let e = 0; e < nE; e++) for (let q = 0; q < 2; q++) {
+      const i0 = (e * 2 * NS + 0 * 2 + q) * 3, i1 = (e * 2 * NS + (NS - 1) * 2 + q) * 3;
+      for (let c = 0; c < 3; c++) { const m = (nr[i0 + c] + nr[i1 + c]) / 2; nr[i0 + c] = nr[i1 + c] = m; }
+    }
+    ringGeo.attributes.normal.needsUpdate = true;
+  }
+  ringGeo.computeBoundingSphere();
+}
+
+// ── the cursor: Signal, unlit (it is the light of the prompt) ──
+const curMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(SIGNAL), toneMapped: false });
+const sideMat = new THREE.MeshBasicMaterial({ color: new THREE.Color('#C8441A'), toneMapped: false });
+const topMat = new THREE.MeshBasicMaterial({ color: new THREE.Color('#E5521C'), toneMapped: false });
+const cursor = new THREE.Mesh(new THREE.BoxGeometry(CUR.w, CUR.h, DEPTH), [sideMat, sideMat, topMat, sideMat, curMat, curMat]);
+cursor.position.set(CUR.x, CUR.y, 0); scene.add(cursor);
+const gc = document.createElement('canvas'); gc.width = gc.height = 128;
+{ const c = gc.getContext('2d'); const g = c.createRadialGradient(64, 64, 0, 64, 64, 64); g.addColorStop(0, 'rgba(255,120,60,0.9)'); g.addColorStop(0.35, 'rgba(255,91,31,0.25)'); g.addColorStop(1, 'rgba(255,91,31,0)'); c.fillStyle = g; c.fillRect(0, 0, 128, 128); }
+const glow = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(gc), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }));
+glow.position.set(CUR.x, CUR.y, -DEPTH / 2 - 2); scene.add(glow);
+const curLight = new THREE.PointLight('#ff6a2a', 0, 0, 2); curLight.position.set(CUR.x - 20, CUR.y + 8, 30); scene.add(curLight);
+
+// ── lights ──
+const key = new THREE.SpotLight('#fff6ec', 0, 0, Math.PI / 6, 0.85, 0); key.position.set(-380, 320, 520); scene.add(key); scene.add(key.target);
+const rim = new THREE.DirectionalLight('#dfe6ff', 0); rim.position.set(300, 160, -380); scene.add(rim);
+const sweep = new THREE.PointLight('#ffffff', 0, 0, 0); scene.add(sweep);
+
+const camera = new THREE.PerspectiveCamera(30, W / H, 1, 8000);
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const lerp = (a, b, t) => a + (b - a) * t;
+const seg = (t, a, b) => clamp((t - a) / (b - a));
+const expoIn = (x) => (x <= 0 ? 0 : Math.pow(2, 10 * x - 10));
+const expoOut = (x) => (x >= 1 ? 1 : 1 - Math.pow(2, -10 * x));
+const expoInOut = (x) => (x <= 0 ? 0 : x >= 1 ? 1 : x < 0.5 ? Math.pow(2, 20 * x - 10) / 2 : (2 - Math.pow(2, -20 * x + 10)) / 2);
+const sineInOut = (x) => -(Math.cos(Math.PI * x) - 1) / 2;
+const cubicOut = (x) => 1 - Math.pow(1 - x, 3);
+function spring(x, w = 9, z = 0.55) { if (x <= 0) return 0; const wd = w * Math.sqrt(1 - z * z); return 1 - Math.exp(-z * w * x) * (Math.cos(wd * x) + (z * w / wd) * Math.sin(wd * x)); }
+
+function orbitCam(tx, ty, d, yaw, pitch, roll = 0) {
+  camera.position.set(tx + Math.sin(yaw) * Math.cos(pitch) * d, ty + Math.sin(pitch) * d, Math.cos(yaw) * Math.cos(pitch) * d);
+  camera.up.set(Math.sin(roll), Math.cos(roll), 0);
+  camera.lookAt(tx, ty, 0); camera.updateProjectionMatrix();
+}
+function lights(li, t, s0, s1, sweepI = 22) {
+  key.intensity = 1.5 * li; key.target.position.set(0, 0, 0);
+  rim.intensity = 1.6 * li; scene.environmentIntensity = 0.32 * li + 0.02;
+  const sw = seg(t, s0, s1);
+  sweep.position.set(lerp(-420, 420, sineInOut(sw)), lerp(240, -140, sineInOut(sw)), 170);
+  sweep.intensity = sweepI * 0.07 * Math.sin(Math.PI * sw) * li;
+}
+const BEAT = 0.5, BAR = 2.0;
+const TANH = Math.tan(Math.PI / 12);
+
+// OPEN (6 s): ">_" in the dark, cursor blinking → the ">" bends into the "o" on bar 1 with a whip orbit →
+// square-on o_ on bar 2 → push into the cursor until it fills the frame on bar 3 (the carry).
+function shotOpen(t) {
+  const blinkOn = (t >= 0.25 && t < 0.75) || (t >= 1.0 && t < 1.5) || t >= 1.75;
+  cursor.visible = blinkOn; glow.visible = blinkOn;
+  const mu = MO_k(seg(t, 1.98, 2.8));
+  buildRing(Math.min(1, mu));
+  const pop = t < 2.0 ? 1 : 1 + 0.06 * Math.sin(Math.PI * clamp((t - 2.0) / 0.5)) * Math.exp(-(t - 2.0) * 2);
+  ringGrp.scale.setScalar(pop);
+  ring.visible = true;
+  // camera: one continuous path
+  const p1 = cubicOut(seg(t, 0.0, 2.0));                       // pull back from the cursor
+  const w = expoInOut(seg(t, 1.85, 3.5));                       // whip orbit across the morph
+  const st = sineInOut(seg(t, 3.2, 4.3));                       // settle square-on
+  let yaw = lerp(-0.62, -0.34, p1); yaw = lerp(yaw, 0.30, w); yaw = lerp(yaw, 0, st);
+  let pitch = lerp(0.2, 0.12, p1); pitch = lerp(pitch, -0.07, w); pitch = lerp(pitch, 0, st);
+  const roll = Math.sin(Math.PI * w) * -0.05 * (1 - st);
+  let d = Math.exp(lerp(Math.log(210), Math.log(470), p1)); d = lerp(d, 600, w); d = lerp(d, 660, st);
+  d -= 26 * seg(t, 4.2, 4.6);
+  let tx = lerp(CUR.x - 6, CUR.x * 0.35, p1), ty = lerp(CUR.y, CUR.y * 0.4, p1);
+  tx = lerp(tx, 0, st); ty = lerp(ty, 0, st);
+  // push into the cursor (expo-in), front face at z = DEPTH/2
+  const pu = expoIn(seg(t, 4.55, 5.85));
+  tx = lerp(tx, CUR.x, sineInOut(seg(t, 4.55, 5.5))); ty = lerp(ty, CUR.y, sineInOut(seg(t, 4.55, 5.5)));
+  d = Math.exp(lerp(Math.log(d), Math.log(DEPTH / 2 + 22), pu));
+  orbitCam(tx, ty, d, yaw * (1 - pu), pitch * (1 - pu), roll);
+  const li = 0.38 + 0.62 * cubicOut(seg(t, 0.6, 1.9));
+  lights(li, t, 2.0, 4.4);
+  curLight.intensity = (blinkOn ? 1 : 0) * 1400;
+  glow.scale.set(150, 95, 1); glow.material.opacity = 0.45;
+}
+
+// END (3 s): start inside the cursor (full Signal) → pull back; the ring flips in and lands on 1.1 s →
+// settles square-on exactly where the 2D lockup symbol sits (ppu & screen origin from the URL).
+const PPU = +(Q.get('ppu') || 0.8634), SX = +(Q.get('sx') || 0), SY = +(Q.get('sy') || 0);   // screen pos of world origin
+function shotEnd(t) {
+  cursor.visible = true; glow.visible = true;
+  buildRing(1);
+  const flip = spring(seg(t, 0.25, 2.4) * 2.15, 7.5, 0.6);
+  ringGrp.rotation.set(0, lerp(-Math.PI * 0.62, 0, flip), 0);
+  ringGrp.position.set(RC[0], 0, 0); ring.position.set(-RC[0], 0, 0);
+  ringGrp.scale.setScalar(1);
+  const dL = DEPTH / 2 + H / (2 * TANH * PPU);
+  const txL = (960 - SX) / PPU, tyL = (SY - 540) / PPU;
+  const p = expoOut(seg(t, 0.07, 1.9));
+  const d = Math.exp(lerp(Math.log(DEPTH / 2 + 22), Math.log(dL), p));
+  const tx = lerp(CUR.x, txL, sineInOut(seg(t, 0.15, 1.9))), ty = lerp(CUR.y, tyL, sineInOut(seg(t, 0.15, 1.9)));
+  const set = seg(t, 1.6, 2.3);
+  const yaw = 0.16 * (1 - sineInOut(set)) * seg(t, 0, 0.6), pitch = -0.05 * (1 - sineInOut(set)) * seg(t, 0, 0.6);
+  orbitCam(tx, ty, d, yaw, pitch, 0);
+  lights(1, t, 0.4, 2.2, 18);
+  curLight.intensity = 1400;
+  glow.scale.set(150, 95, 1); glow.material.opacity = 0.45 * (1 - seg(t, 2.0, 2.4));
+}
+
+window.__seek = (t) => { if (SHOT === 'open') shotOpen(t); else shotEnd(t); renderer.render(scene, camera); return true; };
+window.__ready = true;
+</script></body></html>

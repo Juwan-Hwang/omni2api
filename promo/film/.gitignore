@@ -1,0 +1,4 @@
+film/out/
+repos/
+__pycache__/
+*.rebuild.mp4

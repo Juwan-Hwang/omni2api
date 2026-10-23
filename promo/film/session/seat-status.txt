@@ -1,0 +1,9 @@
+active: null
+buffered_events: 0
+consumer: oh-seat-aee9852c
+cursor: 0
+open_turns: []
+pending_calls: []
+server: ok
+state_file: /home/sandbox/.omni2api/seat-state.json
+url: http://127.0.0.1:8080

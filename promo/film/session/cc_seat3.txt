@@ -1,0 +1,19 @@
+NEW CONVERSATION conv=cnv_01a1689364a57620920d4e41f420aa23
+MESSAGE conv=cnv_01a1689364a57620920d4e41f420aa23 client=claude_code
+How much Rust is in ./omni2api? Lines, please.
+tools in cnv_01a1689364a57620920d4e41f420aa23 (13; * = required; system prompt 15823 chars, `oh-seat caps --full`):
+  Agent(description*: string, prompt*: string, effort: string, isolation: string, model: string, subagent_type: string)
+  AskUserQuestion(questions*: {header*: string, multiSelect*: boolean, options*: {description*: string, label*: string, preview: string}[], question*: string}[], annotations: object, answers: object, metadata: {source: string})
+  Bash(command*: string, dangerouslyDisableSandbox: boolean, description: string, run_in_background: boolean, timeout: number)
+  Edit(file_path*: string, new_string*: string, old_string*: string, replace_all: boolean)
+  ListAgents(channel: string, q: string)
+  Read(file_path*: string, allow_large: boolean, limit: integer, offset: integer, pages: string)
+  ReportFindings(findings*: object[], level: string)
+  ScheduleWakeup(delaySeconds: number, noop: boolean, prompt: string, reason: string, stop: boolean)
+  Skill(skill*: string, args: string)
+  ToolSearch(max_results*: number, query*: string)
+  Workflow(args: any, description: string, name: string, resumeFromRunId: string, script: string, scriptPath: string, title: string)
+  DeferredToolPlaceholder()
+  Write(content*: string, file_path*: string)
+  caller env: cwd=/workspace/work/omni/session/cc  platform=linux  shell=bash  date=2026-10-23
+  deferred tools (ToolSearch query=select:NAME first): CronCreate, CronDelete, CronList, EnterPlanMode, EnterWorktree, ExitPlanMode, ExitWorktree, NotebookEdit, SendMessage, TaskStop, WebFetch, WebSearch

@@ -1,0 +1,9 @@
+# Python 3.12, Debian 13 aarch64 — same toolchain as the Zephyr launch film
+playwright==1.64.0          # then: python -m playwright install --with-deps chromium
+numpy==2.5.4
+scipy==1.18.1
+pillow==13.0.0
+soundfile
+soxr
+# earshot (SFX bank) pinned to commit 925ebe56a1b755e5d354ab642bb8f344440cfa9c — installed by reproduce.sh
+# ffmpeg 7.1.5 (libx264, AAC)

@@ -1,0 +1,4 @@
+NEW CONVERSATION conv=cnv_01a16890bcab7f90826c949f7fcbd0e2
+MESSAGE conv=cnv_01a16890bcab7f90826c949f7fcbd0e2 client=unknown
+hello
+cnv_01a16890bcab7f90826c949f7fcbd0e2 declared no tools (system prompt 0 chars): reply only

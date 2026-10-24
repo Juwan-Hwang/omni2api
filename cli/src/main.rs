@@ -64,7 +64,7 @@ struct Global {
     /// File holding the key (a bare ohk_... or an `api_key=ohk_...` line). Default ~/.omni2api/seat_key
     #[arg(long, env = "OH_SEAT_KEY_FILE", global = true)]
     key_file: Option<PathBuf>,
-    /// State file (cursor, active conversation, buffered events). Default ~/.omni2api/seat-state.json
+    /// State file (cursor, active conversation, buffered events). Default ~/.omni2api/seat-state.json ($OMNI2API_HOME/seat-state.json when set)
     #[arg(long, env = "OH_SEAT_STATE", global = true)]
     state: Option<PathBuf>,
     /// One JSON object per line instead of text
@@ -406,7 +406,7 @@ impl Ctx {
             None => {
                 let path = g
                     .key_file
-                    .unwrap_or_else(|| home().join(".omni2api").join("seat_key"));
+                    .unwrap_or_else(|| omni2api_home().join("seat_key"));
                 let txt = std::fs::read_to_string(&path).map_err(|e| {
                     Fail(
                         USAGE,
@@ -426,7 +426,7 @@ impl Ctx {
         };
         let state_path = g
             .state
-            .unwrap_or_else(|| home().join(".omni2api").join("seat-state.json"));
+            .unwrap_or_else(|| omni2api_home().join("seat-state.json"));
         let mut st: State = std::fs::read_to_string(&state_path)
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
@@ -480,7 +480,7 @@ impl Ctx {
         else {
             return Vec::new();
         };
-        let dir = home().join(".omni2api").join("images");
+        let dir = omni2api_home().join("images");
         let _ = std::fs::create_dir_all(&dir);
         let mut out = Vec::new();
         for (i, img) in m["images"].as_array().into_iter().flatten().enumerate() {
@@ -836,7 +836,7 @@ fn cap_output(body: String, id: &str) -> String {
     if n <= max {
         return body;
     }
-    let dir = home().join(".omni2api").join("results");
+    let dir = omni2api_home().join("results");
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join(format!("{}.txt", id.replace(['/', '\\', '.'], "_")));
     let saved = std::fs::write(&path, &body).is_ok();
@@ -862,7 +862,7 @@ fn save_result_images(e: &Value) -> Vec<String> {
     let id = s(e, "invocation_id")
         .unwrap_or("result")
         .replace(['/', '\\', '.'], "_");
-    let dir = home().join(".omni2api").join("images");
+    let dir = omni2api_home().join("images");
     let _ = std::fs::create_dir_all(&dir);
     let mut out = Vec::new();
     for (i, url) in imgs.iter().filter_map(|v| v.as_str()).enumerate() {

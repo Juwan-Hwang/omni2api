@@ -31,14 +31,53 @@ use crate::storage::AppState;
 /// belongs to whoever sits in the seat, not to this software.
 pub const DEFAULT_MODEL: &str = "omni2api";
 
+/// Version of the JSON that `up --json`, `status --json` and endpoint.json
+/// carry. The contract (SETUP.md, "Machine-readable status"): fields are
+/// only ever added; none is renamed, retyped or removed without bumping it.
+pub const SCHEMA: u64 = 1;
+
+/// `--json` was given: print one JSON object instead of the banner.
+static JSON_OUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn json_out() -> bool {
+    JSON_OUT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The status object: endpoint.json plus whether `up` is alive.
+pub fn status_object(dir: &Path) -> serde_json::Value {
+    let pid = read_pid(dir).filter(|p| pid_alive(*p));
+    let info = std::fs::read_to_string(dir.join("endpoint.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+    match (pid, info) {
+        (Some(pid), Some(mut info)) => {
+            info["running"] = serde_json::json!(true);
+            info["pid"] = serde_json::json!(pid);
+            info["schema"] = serde_json::json!(SCHEMA);
+            info
+        }
+        (pid, _) => serde_json::json!({
+            "schema": SCHEMA,
+            "running": false,
+            "pid": pid,
+            "error": if pid.is_some() { "starting: endpoint not published yet" } else { "not running" },
+        }),
+    }
+}
+
+fn print_json(v: &serde_json::Value) {
+    println!("{}", serde_json::to_string(v).unwrap_or_default());
+}
+
 pub const USAGE: &str = "\
 omni2api — put anything (an AI agent, a script, you) behind an OpenAI-compatible API
 
   omni2api up -d     start in the background; prints local + public base_url, keys, model
   omni2api up        same; stays in the foreground only in a real terminal
                      (--foreground forces it, e.g. under systemd or Docker)
-  omni2api status    show the running endpoint
+  omni2api status    show the running endpoint (exit 0 running, 1 not)
   omni2api down      stop the background one
+  --json             on up/status/down: one JSON object on stdout instead of text
   omni2api --version print the version
 
   up options: --port N (8080)  --host H (127.0.0.1)  --no-tunnel  --tunnel auto|cloudflare|pinggy|token|none  --name \"Seat name\"  --model \"Model name\"
@@ -576,6 +615,7 @@ pub fn endpoint_json(
 ) -> serde_json::Value {
     let base = |u: &str| format!("{}/v1", u.trim_end_matches('/'));
     serde_json::json!({
+        "schema": SCHEMA,
         "model": model,
         "local_base_url": base(local),
         "public_base_url": public.map(base),
@@ -658,6 +698,10 @@ fn detach(args: &[String], dir: &Path) -> anyhow::Result<()> {
             .ok()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         {
+            if json_out() {
+                print_json(&status_object(dir));
+                return Ok(());
+            }
             print_banner(&info);
             println!(
                 "  Running in the background (pid {}). Log: {}",
@@ -673,6 +717,16 @@ fn detach(args: &[String], dir: &Path) -> anyhow::Result<()> {
         }
     }
     let log = std::fs::read_to_string(dir.join("up.log")).unwrap_or_default();
+    if json_out() {
+        print_json(&serde_json::json!({
+            "schema": SCHEMA,
+            "running": false,
+            "pid": null,
+            "error": "did not come up",
+            "log": log,
+        }));
+        std::process::exit(1);
+    }
     anyhow::bail!("omni2api did not come up. Log:\n{log}")
 }
 
@@ -714,37 +768,47 @@ fn kill_pid(pid: u32) {
         .status();
 }
 
-/// `omni2api status`: is it running, and where.
-pub fn run_status() -> anyhow::Result<()> {
-    let dir = home_dir();
-    let running = read_pid(&dir).filter(|p| pid_alive(*p));
-    match std::fs::read_to_string(dir.join("endpoint.json"))
-        .ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-    {
-        Some(info) if running.is_some() => {
-            print_banner(&info);
-            println!("  Running (pid {}).", running.unwrap_or(0));
-            Ok(())
-        }
-        _ => {
-            println!("omni2api is not running in the background. Start it: omni2api up -d");
-            std::process::exit(1)
-        }
+/// `omni2api status [--json]`: is it running, and where.
+/// Exit 0 running, 1 not running (also with --json).
+pub fn run_status(args: &[String]) -> anyhow::Result<()> {
+    let st = status_object(&home_dir());
+    let running = st["running"].as_bool() == Some(true);
+    if args.iter().any(|a| a == "--json") {
+        print_json(&st);
+    } else if running {
+        print_banner(&st);
+        println!("  Running (pid {}).", st["pid"]);
+    } else {
+        println!("omni2api is not running in the background. Start it: omni2api up -d");
     }
+    if !running {
+        std::process::exit(1)
+    }
+    Ok(())
 }
 
 /// `omni2api down`: stop the background `up`.
-pub fn run_down() -> anyhow::Result<()> {
+/// `omni2api down [--json]`: exit 0 either way (it is not running after).
+pub fn run_down(args: &[String]) -> anyhow::Result<()> {
     let dir = home_dir();
-    match read_pid(&dir).filter(|p| pid_alive(*p)) {
-        Some(pid) => {
-            kill_pid(pid);
-            let _ = std::fs::remove_file(dir.join("up.pid"));
-            let _ = std::fs::remove_file(dir.join("endpoint.json"));
-            println!("stopped (pid {pid})");
+    let json = args.iter().any(|a| a == "--json");
+    let pid = read_pid(&dir).filter(|p| pid_alive(*p));
+    if let Some(pid) = pid {
+        kill_pid(pid);
+    }
+    let _ = std::fs::remove_file(dir.join("up.pid"));
+    let _ = std::fs::remove_file(dir.join("endpoint.json"));
+    if json {
+        print_json(&serde_json::json!({
+            "schema": SCHEMA,
+            "running": false,
+            "stopped_pid": pid,
+        }));
+    } else {
+        match pid {
+            Some(pid) => println!("stopped (pid {pid})"),
+            None => println!("omni2api was not running"),
         }
-        None => println!("omni2api was not running"),
     }
     Ok(())
 }
@@ -775,8 +839,9 @@ pub async fn run_up(args: &[String]) -> anyhow::Result<()> {
     // silently became a misconfigured one. Value flags consume the next
     // argument, exactly as UpOptions::from_args reads them.
     const VALUE_FLAGS: [&str; 5] = ["--tunnel", "--port", "--host", "--name", "--model"];
-    const SWITCH_FLAGS: [&str; 6] = [
+    const SWITCH_FLAGS: [&str; 7] = [
         "--no-tunnel",
+        "--json",
         "--foreground",
         "-f",
         "-d",
@@ -794,6 +859,9 @@ pub async fn run_up(args: &[String]) -> anyhow::Result<()> {
             eprintln!("omni2api up: unknown argument '{a}' — nothing was started.\n\n{USAGE}");
             std::process::exit(2);
         }
+    }
+    if args.iter().any(|a| a == "--json") {
+        JSON_OUT.store(true, std::sync::atomic::Ordering::Relaxed);
     }
     let opts = UpOptions::from_args(args);
     let dir = home_dir();
@@ -984,17 +1052,47 @@ fn publish_endpoint(
             "no tunnel could be opened from this machine (outbound traffic to Cloudflare and pinggy blocked?). The local URL works; for a public one run omni2api on a machine with normal internet access, or use a named tunnel / your own server"
         );
     }
+    info["tunnel_verified"] = serde_json::json!(public.is_some() && verified);
     write_private(
         &dir.join("endpoint.json"),
         &serde_json::to_string_pretty(&info)?,
     )?;
-    print_banner(&info);
+    // A detached child's stdout is up.log; the parent prints the result.
+    if json_out() {
+        if std::env::var("OMNI2API_CHILD").is_err() {
+            let mut v = info.clone();
+            v["running"] = serde_json::json!(true);
+            v["pid"] = serde_json::json!(std::process::id());
+            print_json(&v);
+        }
+    } else {
+        print_banner(&info);
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn status_object_reports_not_running_with_schema() {
+        let dir = std::env::temp_dir().join(format!("o2a-status-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let st = status_object(&dir);
+        assert_eq!(st["schema"], SCHEMA);
+        assert_eq!(st["running"], false);
+        assert!(st["pid"].is_null());
+        assert_eq!(st["error"], "not running");
+        let keys = Keys {
+            caller_key: "c".into(),
+            responder_key: "r".into(),
+        };
+        let ep = endpoint_json("http://127.0.0.1:1", None, &keys, "m");
+        assert_eq!(ep["schema"], SCHEMA);
+        assert!(ep["public_base_url"].is_null());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn finds_quick_url_in_cloudflared_box() {

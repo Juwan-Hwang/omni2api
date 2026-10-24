@@ -54,8 +54,8 @@ async fn main() -> anyhow::Result<()> {
     // Zero-setup mode: in-memory, keys minted, public tunnel. See quick.rs.
     match args.get(1).map(|s| s.as_str()) {
         Some("up") => return omni2api_server::quick::run_up(&args[2..]).await,
-        Some("status") => return omni2api_server::quick::run_status(),
-        Some("down") => return omni2api_server::quick::run_down(),
+        Some("status") => return omni2api_server::quick::run_status(&args[2..]),
+        Some("down") => return omni2api_server::quick::run_down(&args[2..]),
         Some("help" | "-h" | "--help") => {
             print!("{}", omni2api_server::quick::USAGE);
             return Ok(());

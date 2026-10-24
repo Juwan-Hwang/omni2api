@@ -14,6 +14,7 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod input;
+mod mcp;
 
 // stdout closed early (`| head`): stop quietly instead of panicking.
 macro_rules! println {
@@ -186,6 +187,8 @@ enum Cmd {
     Status,
     /// Everything you need on one screen: the loop, input rules, exit codes
     Guide,
+    /// Serve these commands as an MCP server over stdio (for MCP-only harnesses)
+    Mcp,
 }
 
 // ── errors ──
@@ -2463,6 +2466,7 @@ fn run(cli: Cli) -> R<u8> {
             println!("{}", GUIDE.trim_end());
             return Ok(OK);
         }
+        Some(Cmd::Mcp) => return Ok(mcp::serve()),
         Some(c) => c,
     };
     let mut cx = Ctx::new(cli.g)?;
@@ -2570,7 +2574,7 @@ fn run(cli: Cli) -> R<u8> {
             Ok(OK)
         }
         Cmd::Status => cmd_status(&mut cx),
-        Cmd::Guide => unreachable!(),
+        Cmd::Guide | Cmd::Mcp => unreachable!(),
     }
 }
 

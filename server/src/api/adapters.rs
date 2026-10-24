@@ -420,6 +420,41 @@ fn responses_content(content: &Value) -> Value {
     }
 }
 
+/// One flat function name for a tool inside a Responses `namespace`
+/// (Codex groups each MCP server's tools as `mcp__<server>` or
+/// `mcp__<server>__`): `mcp__seat` + `next` = `mcp__seat__next`.
+fn ns_join(ns: &str, name: &str) -> String {
+    if ns.ends_with("__") {
+        format!("{ns}{name}")
+    } else {
+        format!("{ns}__{name}")
+    }
+}
+
+/// (flat name, namespace, inner name) for every function inside a
+/// `namespace` tool: the seat sees the flat name, the client must get the
+/// call back as `name` + `namespace` or it cannot route it.
+fn namespaced_tool_names(tools: &[Value]) -> Vec<(String, String, String)> {
+    let mut v = Vec::new();
+    for t in tools {
+        if t.get("type").and_then(|x| x.as_str()) != Some("namespace") {
+            continue;
+        }
+        let ns = t.get("name").and_then(|x| x.as_str()).unwrap_or("");
+        for inner in t
+            .get("tools")
+            .and_then(|x| x.as_array())
+            .into_iter()
+            .flatten()
+        {
+            if let Some(n) = inner.get("name").and_then(|x| x.as_str()) {
+                v.push((ns_join(ns, n), ns.to_string(), n.to_string()));
+            }
+        }
+    }
+    v
+}
+
 /// Tool kinds the client declared, by name: `custom` tools (Codex's
 /// freeform `apply_patch`) take one raw string and are answered with a
 /// `custom_tool_call`, not a `function_call`.
@@ -481,10 +516,13 @@ pub(crate) fn responses_to_chat(body: &Value) -> Value {
                                 it.get("action").cloned().unwrap_or(json!({})).to_string(),
                             ),
                             _ => (
-                                it.get("name")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string(),
+                                {
+                                    let n = it.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                                    match it.get("namespace").and_then(|v| v.as_str()) {
+                                        Some(ns) if !ns.is_empty() => ns_join(ns, n),
+                                        _ => n.to_string(),
+                                    }
+                                },
                                 it.get("arguments")
                                     .map(|a| {
                                         a.as_str()
@@ -582,6 +620,30 @@ pub(crate) fn responses_to_chat(body: &Value) -> Value {
                         "parameters": {"type": "object", "properties": {"input": {"type": "string"}}, "required": ["input"]},
                     }
                 })),
+                "namespace" => {
+                    let ns = t.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                    let ns_desc = t.get("description").and_then(|v| v.as_str()).unwrap_or("");
+                    for inner in t.get("tools").and_then(|v| v.as_array()).into_iter().flatten() {
+                        let Some(n) = inner.get("name").and_then(|v| v.as_str()) else {
+                            continue;
+                        };
+                        let desc = inner.get("description").and_then(|v| v.as_str()).unwrap_or("");
+                        let first = ns_desc.lines().next().unwrap_or("");
+                        let desc = if first.is_empty() {
+                            desc.to_string()
+                        } else {
+                            format!("{desc} [{ns}: {first}]")
+                        };
+                        let params = match inner.get("type").and_then(|v| v.as_str()) {
+                            Some("custom") => json!({"type": "object", "properties": {"input": {"type": "string"}}, "required": ["input"]}),
+                            _ => inner.get("parameters").cloned().unwrap_or(json!({"type": "object", "properties": {}})),
+                        };
+                        tools.push(json!({
+                            "type": "function",
+                            "function": {"name": ns_join(ns, n), "description": desc, "parameters": params},
+                        }));
+                    }
+                }
                 "local_shell" => tools.push(json!({
                     "type": "function",
                     "function": {
@@ -628,6 +690,7 @@ struct ResponsesBuilder {
     model: String,
     created: i64,
     custom: Vec<String>,
+    namespaced: Vec<(String, String, String)>,
     seq: u64,
     text_item: Option<(usize, String, String)>, // (output_index, item_id, text)
     reasoning_item: Option<(usize, String, String)>,
@@ -637,12 +700,13 @@ struct ResponsesBuilder {
 }
 
 impl ResponsesBuilder {
-    fn new(model: String, custom: Vec<String>) -> Self {
+    fn new(model: String, custom: Vec<String>, namespaced: Vec<(String, String, String)>) -> Self {
         Self {
             response_id: format!("resp_{}", Uuid::now_v7().simple()),
             model,
             created: chrono::Utc::now().timestamp(),
             custom,
+            namespaced,
             seq: 0,
             text_item: None,
             reasoning_item: None,
@@ -811,8 +875,18 @@ impl ResponsesBuilder {
             self.output.push(item);
         } else {
             let id = format!("fc_{}", Uuid::now_v7().simple());
-            let item = json!({"type": "function_call", "id": id, "call_id": call_id, "name": name, "arguments": args, "status": "completed"});
-            v.push(self.ev("response.output_item.added", json!({"output_index": idx, "item": {"type": "function_call", "id": id, "call_id": call_id, "name": name, "arguments": ""}})));
+            let mut item = json!({"type": "function_call", "id": id, "call_id": call_id, "name": name, "arguments": args, "status": "completed"});
+            let mut added = json!({"type": "function_call", "id": id, "call_id": call_id, "name": name, "arguments": ""});
+            if let Some((_, ns, inner)) = self.namespaced.iter().find(|(f, _, _)| f == name) {
+                for it in [&mut item, &mut added] {
+                    it["name"] = json!(inner);
+                    it["namespace"] = json!(ns);
+                }
+            }
+            v.push(self.ev(
+                "response.output_item.added",
+                json!({"output_index": idx, "item": added}),
+            ));
             v.push(self.ev(
                 "response.function_call_arguments.delta",
                 json!({"item_id": id, "output_index": idx, "delta": args}),
@@ -869,12 +943,13 @@ pub async fn responses(
         .get("stream")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let custom = custom_tool_names(
-        body.get("tools")
-            .and_then(|t| t.as_array())
-            .map(|a| a.as_slice())
-            .unwrap_or(&[]),
-    );
+    let declared = body
+        .get("tools")
+        .and_then(|t| t.as_array())
+        .map(|a| a.as_slice())
+        .unwrap_or(&[]);
+    let custom = custom_tool_names(declared);
+    let namespaced = namespaced_tool_names(declared);
     let chat = match chat_request(responses_to_chat(&body)) {
         Ok(c) => c,
         Err(r) => return r,
@@ -898,7 +973,7 @@ pub async fn responses(
         let Some(v) = body_json(resp).await else {
             return responses_error(StatusCode::BAD_GATEWAY, "unreadable completion");
         };
-        let mut b = ResponsesBuilder::new(model, custom);
+        let mut b = ResponsesBuilder::new(model, custom, namespaced);
         let msg = v
             .pointer("/choices/0/message")
             .cloned()
@@ -934,7 +1009,7 @@ pub async fn responses(
 
     let mut upstream = resp.into_body().into_data_stream();
     let out = async_stream::stream! {
-        let mut b = ResponsesBuilder::new(model, custom);
+        let mut b = ResponsesBuilder::new(model, custom, namespaced);
         let mut lines = SseLines::new();
         for f in b.start() { yield Ok::<Bytes, std::convert::Infallible>(f); }
         'outer: while let Some(chunk) = upstream.next().await {
@@ -991,7 +1066,7 @@ mod tests {
 
     #[test]
     fn responses_usage_always_has_details() {
-        let b = ResponsesBuilder::new("m".into(), Vec::new());
+        let b = ResponsesBuilder::new("m".into(), Vec::new(), Vec::new());
         let u = &b.response_obj("completed")["usage"];
         assert_eq!(u["input_tokens_details"]["cached_tokens"], 0);
         assert_eq!(u["output_tokens_details"]["reasoning_tokens"], 0);
@@ -1074,12 +1149,54 @@ mod tests {
 
     #[test]
     fn custom_tools_are_answered_as_custom_calls() {
-        let mut b = ResponsesBuilder::new("m".into(), vec!["apply_patch".into()]);
+        let mut b = ResponsesBuilder::new("m".into(), vec!["apply_patch".into()], Vec::new());
         b.call("c1", "apply_patch", r#"{"input":"*** Begin Patch"}"#);
         assert_eq!(b.output[0]["type"], "custom_tool_call");
         assert_eq!(b.output[0]["input"], "*** Begin Patch");
         b.call("c2", "shell", r#"{"cmd":"ls"}"#);
         assert_eq!(b.output[1]["type"], "function_call");
+    }
+
+    #[test]
+    fn namespace_tools_flatten_and_calls_come_back_namespaced() {
+        // Codex groups each MCP server's tools in a `namespace`.
+        let body = json!({
+            "model": "m",
+            "input": [
+                {"type": "message", "role": "user", "content": "go"},
+                {"type": "function_call", "call_id": "c1", "namespace": "mcp__seat", "name": "next", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "c1", "output": "nothing"}
+            ],
+            "tools": [
+                {"type": "function", "name": "exec_command", "parameters": {"type": "object"}},
+                {"type": "namespace", "name": "mcp__seat", "description": "Seat tools", "tools": [
+                    {"type": "function", "name": "next", "description": "wait", "parameters": {"type": "object", "properties": {"wait": {"type": "integer"}}}}
+                ]},
+                {"type": "namespace", "name": "mcp__web__", "tools": [{"type": "function", "name": "search"}]}
+            ]
+        });
+        let chat = responses_to_chat(&body);
+        let names: Vec<&str> = chat["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["function"]["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            ["exec_command", "mcp__seat__next", "mcp__web__search"]
+        );
+        assert_eq!(
+            chat["messages"][1]["tool_calls"][0]["function"]["name"],
+            "mcp__seat__next"
+        );
+        let ns = namespaced_tool_names(body["tools"].as_array().unwrap());
+        let mut b = ResponsesBuilder::new("m".into(), Vec::new(), ns);
+        b.call("c2", "mcp__seat__next", "{}");
+        assert_eq!(b.output[0]["name"], "next");
+        assert_eq!(b.output[0]["namespace"], "mcp__seat");
+        b.call("c3", "exec_command", "{}");
+        assert!(b.output[1].get("namespace").is_none());
     }
 
     #[test]

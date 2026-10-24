@@ -7,9 +7,10 @@
 //!
 //! Waiting: many MCP clients abort a tool call after ~60 s, so `next`,
 //! `call_tool` and `result` wait at most OH_SEAT_MCP_WAIT seconds (default
-//! 40) unless the call asks for longer, and say plainly "nothing yet, call
-//! again". Progress notifications are sent while waiting, so clients that
-//! extend their timeout on progress can wait longer.
+//! 40), never longer than OH_SEAT_MCP_WAIT_MAX (default 50, or
+//! OH_SEAT_MCP_WAIT if larger) even when the call asks: Cline aborts at a
+//! hard 60 s, and a `next` the client gave up on could swallow a message.
+//! They say plainly "nothing yet, call again".
 
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -42,10 +43,19 @@ fn wait_default() -> u64 {
         .unwrap_or(40)
 }
 
+fn wait_max() -> u64 {
+    std::env::var("OH_SEAT_MCP_WAIT_MAX")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .filter(|v: &u64| *v > 0)
+        .unwrap_or(50)
+        .max(wait_default())
+}
+
 fn tools() -> Value {
-    let w = wait_default();
-    let wait = json!({"type": "integer", "minimum": 0,
-        "description": format!("Seconds to wait (default {w}). Keep it under your MCP client's tool timeout; 0 = check once.")});
+    let (w, m) = (wait_default(), wait_max());
+    let wait = json!({"type": "integer", "minimum": 0, "maximum": m,
+        "description": format!("Seconds to wait (default {w}, at most {m} so MCP client timeouts never cut a wait short); 0 = check once.")});
     let conv = json!({"type": "string", "description": "Conversation: any unique piece of its id (default: the active one)"});
     json!([
         {"name": "next",
@@ -125,6 +135,7 @@ fn wait_of(a: &Value) -> u64 {
         .as_u64()
         .or_else(|| a["wait"].as_str().and_then(|v| v.trim().parse().ok()))
         .unwrap_or_else(wait_default)
+        .min(wait_max())
 }
 
 /// The CLI arguments (and stdin) for one MCP tool call.
@@ -522,6 +533,13 @@ fn handle(m: Value, out: &Out, running: &Running) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wait_is_capped_below_client_timeouts() {
+        assert_eq!(wait_of(&json!({"wait": 100})), 50);
+        assert_eq!(wait_of(&json!({"wait": "5"})), 5);
+        assert_eq!(wait_of(&json!({})), 40);
+    }
 
     #[test]
     fn maps_calls_to_cli() {

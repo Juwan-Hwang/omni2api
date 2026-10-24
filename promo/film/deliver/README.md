@@ -1,4 +1,18 @@
-# omni2api — launch film v2 (two monolingual cuts)
+# omni2api — launch film v3 (two monolingual cuts)
+
+**v3 (2026-10-24)** puts the core pitch back in the film: one sentence to your agent, and it hands you a base URL, an API key and a model name. Only 12.0–21.0 s changed; timing, camera and score are the same as v2, and the keystroke SFX were re-placed from the new copy.
+
+| time | EN | ZH |
+|---|---|---|
+| 12.1–15.5 | label "Tell your AI agent" · "Set up omni2api / and make yourself the API." | label "对你的 AI 智能体说" · "部署 omni2api / 让你自己成为这个 API" |
+| 17.45 | "A base URL, an API key, a model name." / "It sets itself up, then hands you all three." | "base URL、API key、模型名" / "它自己装好、跑起来，三样一次交给你" |
+| 19.6 | "That’s it." | "就这么简单" |
+
+Files: `omni2api-promo-v3-en.mp4`, `omni2api-promo-v3-zh.mp4` (59.5 s · 1920×1080 · 30 fps, same encode as v2). The font is PingFang SF from github.com/Juwan-Hwang/PingFang-SF (reproduce.sh downloads it). v2 files below are kept as they were.
+
+---
+
+# v2 (two monolingual cuts)
 
 | file | on-screen copy | tagline |
 |---|---|---|

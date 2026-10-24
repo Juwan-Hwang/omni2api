@@ -2,3 +2,6 @@ film/out/
 repos/
 __pycache__/
 *.rebuild.mp4
+film/fonts/PingFangSF.ttf
+repos/
+film/out/

@@ -2,7 +2,7 @@
 # v2: encode.sh en|zh — frames_<lang> + mix_<lang> → H.264 CRF16 / AAC 256k, loudness-normalised to -14 LUFS (two-pass loudnorm)
 set -e
 LANG_=${1:-en}
-OUT=${2:-deliver/omni2api-promo-v2-$LANG_.mp4}
+OUT=${2:-deliver/omni2api-promo-v3-$LANG_.mp4}
 MIX=audio/mix_$LANG_.wav
 FR=film/out/frames_$LANG_
 mkdir -p deliver

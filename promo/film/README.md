@@ -2,7 +2,7 @@
 
 Everything used to make the omni2api launch film: two monolingual cuts (EN / ZH), 59.5 s, 1920×1080, 30 fps.
 
-- Finished cuts: `deliver/omni2api-promo-v2-en.mp4`, `deliver/omni2api-promo-v2-zh.mp4` (v1, bilingual, kept for reference)
+- Finished cuts: `deliver/omni2api-promo-v3-en.mp4`, `deliver/omni2api-promo-v3-zh.mp4` (v2 kept) (v1, bilingual, kept for reference)
 - Storyboard, all on-screen copy in both languages, and how each beat was made: `deliver/README.md`
 - Rebuild: `sh reproduce.sh` (Python 3.12 + ffmpeg 7; installs Playwright/Chromium and earshot @925ebe5)
 

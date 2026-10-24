@@ -1,6 +1,6 @@
 #!/bin/sh
 # Rebuild both cuts of the omni2api launch film from this folder.
-#   sh reproduce.sh          → deliver/omni2api-promo-v2-{en,zh}.rebuild.mp4
+#   sh reproduce.sh          → deliver/omni2api-promo-v3-{en,zh}.rebuild.mp4
 #   LANGS=zh sh reproduce.sh → one cut only
 #   RE3D=1 sh reproduce.sh   → also re-render the 3D open/reprise frames (film/frames/{open,end}) from film/o3d.html
 # Every input is committed: real terminal captures (session/, film/data/), fonts (film/fonts/), three.js r170
@@ -11,6 +11,8 @@ pip install -q -r requirements.txt
 python3 -m playwright install --with-deps chromium
 [ -d repos/earshot ] || { git clone -q https://github.com/Leonxlnx/earshot repos/earshot; git -C repos/earshot checkout -q 925ebe56a1b755e5d354ab642bb8f344440cfa9c; }
 pip install -q --no-deps -e repos/earshot
+# PingFang SF (variable wght 100-900) from https://github.com/Juwan-Hwang/PingFang-SF, not committed here (67 MB)
+[ -f film/fonts/PingFangSF.ttf ] || curl -fsSL -o film/fonts/PingFangSF.ttf https://github.com/Juwan-Hwang/PingFang-SF/releases/download/v1.2.0/PingFang-SF-Medium.ttf
 (python3 -m http.server 8777 --directory film >/tmp/http-omni-film.log 2>&1 &)
 sleep 1
 if [ "${RE3D:-0}" = 1 ]; then
@@ -22,5 +24,5 @@ python3 music.py
 for L in ${LANGS:-en zh}; do
   python3 sound.py "$L"                                   # writes audio/mix_$L.wav from the comp's __events()
   python3 render_film.py --comp "comp.html?lang=$L" --out "film/out/frames_$L" --workers 2
-  ./encode.sh "$L" "deliver/omni2api-promo-v2-$L.rebuild.mp4"
+  ./encode.sh "$L" "deliver/omni2api-promo-v3-$L.rebuild.mp4"
 done

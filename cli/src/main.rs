@@ -709,8 +709,24 @@ impl Ctx {
             return Ok(c.to_string());
         }
         let hits: Vec<&String> = self.st.convs.keys().filter(|k| k.contains(c)).collect();
+        // Not seen here (a fresh state file, another host's seat): a turn
+        // still waiting on the server is a conversation too.
+        let open: Vec<String> = if hits.is_empty() && !c.is_empty() {
+            self.inbox(self.st.cursor, 0)
+                .ok()
+                .and_then(|r| r.get("waiting_turns").cloned())
+                .and_then(|v| v.as_array().cloned())
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .filter(|k| k.contains(c))
+                .collect()
+        } else {
+            Vec::new()
+        };
         match hits.len() {
             1 => Ok(hits[0].clone()),
+            0 if open.len() == 1 => Ok(open[0].clone()),
             0 if c.starts_with("cnv_") && c.len() >= 20 => Ok(c.to_string()),
             0 => usage(format!(
                 "no conversation matches `{c}` (known: {}; `oh-seat convs`)",

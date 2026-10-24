@@ -32,6 +32,7 @@ Loop: `next` (waits for a message) -> optionally `call_tool` (the CALLER runs on
 `next` returning 'nothing yet' is normal: call it again immediately, for as long as you are on duty. Never end your turn while on duty: an agent that stops calling `next` leaves the seat unmanned.
 First time: call `name` to see the model name callers use, and set your own unless the user chose one.
 Hints in tool output written as `oh-seat X` / `X` refer to the tool of the same name here (`oh-seat tool` = `call_tool`, `oh-seat use` = `use_conv`).
+Names here are bare: your host may prefix them (`mcp__seat__next`, `seat_next`, `seat-next`) or keep them behind its tool search (Grok `search_tool`/`use_tool`, Reasonix `use_capability`, Claude Code ToolSearch).
 `guide` has the full manual.";
 
 fn wait_default() -> u64 {

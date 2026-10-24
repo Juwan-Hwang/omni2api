@@ -50,25 +50,25 @@ A seat connecting to a public URL from inside a proxied sandbox:
 are never proxied.
 
 ```sh
-omni2api up -d
+omni2api up -d --json
 ```
 
-It runs in the background, survives your shell, and prints (plain `omni2api up`
-detaches the same way when there is no terminal, so it never hangs a shell tool):
+It runs in the background, survives your shell, waits until it is ready,
+and prints one JSON object. Read these fields (ignore any others):
 
-- `base_url (local)` — `http://127.0.0.1:8080/v1`
-- `base_url (public)` — an `https://…/v1` address reachable from anywhere. It
-  tries a Cloudflare quick tunnel first (cloudflared is downloaded on first
-  run), then pinggy through the system `ssh` if Cloudflare is unreachable.
-- `api_key` — the caller key
+- `local_base_url` — `http://127.0.0.1:8080/v1`
+- `public_base_url` — an `https://…/v1` address reachable from anywhere, or
+  null if no tunnel opened. It tries a Cloudflare quick tunnel first
+  (cloudflared is downloaded on first run), then pinggy through the system
+  `ssh`. `public_note`, when present, says why it may not work.
+- `caller_key` — the API key for the user's tools
 - `model` — the name callers use. Until someone chooses one it is the
   placeholder `omni2api`: the seat names itself in step 4, or the user pins
   a name with `omni2api up -d --model <name>` (a pinned name wins and the
   seat cannot change it).
 
-The same values are in `~/.omni2api/endpoint.json`. `omni2api status` prints
-them again, `omni2api down` stops everything. For scripts and agents, add
-`--json` (see "Machine-readable status" below). Keys persist across restarts;
+`omni2api status --json` prints the same object again (exit 1 if not
+running); `omni2api down` stops everything. Keys persist across restarts;
 the quick-tunnel address changes on each `up`.
 
 ## 3. Check it
@@ -178,8 +178,6 @@ the guide.
 - Fixed keys: `OMNI2API_CALLER_KEY` / `OMNI2API_RESPONDER_KEY`.
 - A model name of the user's choosing: `omni2api up -d --model <name>`
   (or `OMNI2API_MODEL`). Without it, the seat names itself.
-- A long-lived multi-user server with PostgreSQL: `omni2api serve` with
-  `OMNI2API_BACKEND=postgres` and `DATABASE_URL` (see `deploy/`).
 
 ## Troubleshooting
 
@@ -254,41 +252,3 @@ the guide.
 - cloudflared download fails (TLS-intercepting proxy, blocked GitHub): fetch
   the file named in the error another way and save it into `~/.omni2api/bin/`.
 - 401: wrong key. Callers use `caller_key`, the seat uses `responder_key`.
-
-## Machine-readable status
-
-A stable interface for tools that embed omni2api. `up --json`,
-`status --json` and `down --json` print exactly one JSON object on one line
-on stdout (warnings go to stderr). `endpoint.json` holds the same object
-minus `running` and `pid`. (A foreground `up --json` prints one more object
-each time it replaces a dead tunnel: read stdout as JSON lines.)
-
-```sh
-omni2api up -d --json      # waits until ready, then prints the object
-omni2api status --json
-```
-
-| field | type | meaning |
-|---|---|---|
-| `schema` | int | contract version, currently `1` |
-| `running` | bool | the background `up` is alive and has published its endpoint |
-| `pid` | int or null | its process id |
-| `model` | string | the model name callers send |
-| `local_base_url` | string | `http://127.0.0.1:PORT/v1` |
-| `public_base_url` | string or null | public `https://…/v1`, null without a tunnel |
-| `tunnel` | string or null | `cloudflare`, `pinggy`, `token`, or null |
-| `tunnel_verified` | bool | this machine reached `public_base_url` itself |
-| `public_note` | string, optional | why the public URL may not work, in words |
-| `caller_key` | string | API key for callers |
-| `responder_key` | string | key for the seat; never hand it to callers |
-| `seat.OH_SEAT_URL`, `seat.OH_SEAT_KEY` | string | what `oh-seat` needs |
-| `error` | string, only when `running` is false | `not running`, `starting: endpoint not published yet`, `did not come up` (with `log`) |
-| `stopped_pid` | int or null, `down` only | the process it stopped |
-
-Exit codes: `status` 0 running, 1 not running; `up` 0 ready, 1 failed,
-2 bad arguments; `down` 0 always (nothing runs afterwards).
-
-Rules: within one `schema` value fields are only added, never renamed,
-retyped or removed; readers must ignore fields they do not know. Anything
-incompatible bumps `schema`. The text output without `--json` is for people
-and may change any time; do not parse it.

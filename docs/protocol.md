@@ -5,7 +5,6 @@
 | Component | Version |
 |---|---|
 | Wire Protocol | `1.0.0` |
-| Dart SDK | `0.1.0` |
 | Minimum Server | `0.1.0` |
 
 ## Compatibility Strategy
@@ -244,8 +243,6 @@ All enums serialize to lowercase strings:
 ## Field Naming Convention
 
 - **JSON wire format**: `snake_case` (e.g., `event_id`, `conversation_id`, `human_id`)
-- **Dart fields**: `camelCase` (e.g., `eventId`, `conversationId`, `humanId`)
-- **Mapping**: `@JsonKey(name: 'snake_case')` annotations on Dart fields
 
 ## Delivery Semantics
 

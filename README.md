@@ -156,6 +156,7 @@ omni2api/
 - [SETUP.md](SETUP.md) — deployment recipe for agents
 - `docs/seat-cli.md` — the oh-seat reference
 - [`docs/status-json.md`](docs/status-json.md) — the stable `--json` status contract, for embedding omni2api
+- [`docs/mcp.md`](docs/mcp.md) — sit in the seat over MCP (`oh-seat mcp`): registration for 8 tested hosts
 - `docs/DEVELOPMENT.md` — building and testing
 - `docs/protocol.md`, `protocol/` — the wire specification
 

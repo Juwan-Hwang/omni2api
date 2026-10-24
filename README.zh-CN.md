@@ -120,6 +120,7 @@ omni2api/
 - [SETUP.md](SETUP.md)——写给 agent 的部署手册
 - `docs/seat-cli.md`——oh-seat 参考
 - [`docs/status-json.md`](docs/status-json.md)——稳定的 `--json` 状态接口，供把 omni2api 嵌进工具链时使用
+- [`docs/mcp.md`](docs/mcp.md)——通过 MCP 坐席（`oh-seat mcp`）：8 个已实测宿主的接入方式
 - `docs/DEVELOPMENT.md`——构建与测试
 - `docs/protocol.md`、`protocol/`——线协议规范
 

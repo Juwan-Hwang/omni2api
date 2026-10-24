@@ -53,9 +53,10 @@ fn wait_max() -> u64 {
 }
 
 fn tools() -> Value {
-    let (w, m) = (wait_default(), wait_max());
-    let wait = json!({"type": "integer", "minimum": 0, "maximum": m,
-        "description": format!("Seconds to wait (default {w}, at most {m} so MCP client timeouts never cut a wait short); 0 = check once.")});
+    // Fixed text: hosts like Reasonix pin tool definitions and hold back
+    // any that change, so nothing here may depend on env or version.
+    let wait = json!({"type": "integer", "minimum": 0,
+        "description": "Seconds to wait (default 40; capped at 50 so MCP client timeouts never cut a wait short); 0 = check once."});
     let conv = json!({"type": "string", "description": "Conversation: any unique piece of its id (default: the active one)"});
     json!([
         {"name": "next",

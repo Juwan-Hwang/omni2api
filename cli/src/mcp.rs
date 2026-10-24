@@ -5,12 +5,11 @@
 //! command, so the behaviour, state file and output are exactly the CLI's;
 //! this file only translates JSON-RPC to arguments and back.
 //!
-//! Waiting: many MCP clients abort a tool call after ~60 s, so `next`,
-//! `call_tool` and `result` wait at most OH_SEAT_MCP_WAIT seconds (default
-//! 40), never longer than OH_SEAT_MCP_WAIT_MAX (default 50, or
-//! OH_SEAT_MCP_WAIT if larger) even when the call asks: Cline aborts at a
-//! hard 60 s, and a `next` the client gave up on could swallow a message.
-//! They say plainly "nothing yet, call again".
+//! Waiting: MCP clients abort tool calls on their own clock (ZCode 30 s,
+//! Cline 60 s, whatever the call asked), so `next`, `call_tool` and
+//! `result` wait at most 25 s by default (OH_SEAT_MCP_WAIT, raise only for a
+//! host known to wait longer; OH_SEAT_MCP_WAIT_MAX caps a `wait` argument,
+//! default the same) and say plainly "nothing yet, call again".
 
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -40,7 +39,7 @@ fn wait_default() -> u64 {
         .ok()
         .and_then(|v| v.trim().parse().ok())
         .filter(|v: &u64| *v > 0)
-        .unwrap_or(40)
+        .unwrap_or(25)
 }
 
 fn wait_max() -> u64 {
@@ -48,7 +47,7 @@ fn wait_max() -> u64 {
         .ok()
         .and_then(|v| v.trim().parse().ok())
         .filter(|v: &u64| *v > 0)
-        .unwrap_or(50)
+        .unwrap_or_else(wait_default)
         .max(wait_default())
 }
 
@@ -56,7 +55,7 @@ fn tools() -> Value {
     // Fixed text: hosts like Reasonix pin tool definitions and hold back
     // any that change, so nothing here may depend on env or version.
     let wait = json!({"type": "integer", "minimum": 0,
-        "description": "Seconds to wait (default 40; capped at 50 so MCP client timeouts never cut a wait short); 0 = check once."});
+        "description": "Seconds to wait (default and maximum 25, so MCP client timeouts never cut a wait short); 0 = check once."});
     let conv = json!({"type": "string", "description": "Conversation: any unique piece of its id (default: the active one)"});
     json!([
         {"name": "next",
@@ -537,9 +536,9 @@ mod tests {
 
     #[test]
     fn wait_is_capped_below_client_timeouts() {
-        assert_eq!(wait_of(&json!({"wait": 100})), 50);
+        assert_eq!(wait_of(&json!({"wait": 100})), 25);
         assert_eq!(wait_of(&json!({"wait": "5"})), 5);
-        assert_eq!(wait_of(&json!({})), 40);
+        assert_eq!(wait_of(&json!({})), 25);
     }
 
     #[test]

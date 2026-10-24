@@ -145,7 +145,6 @@ omni2api/
 ├── server/      # Rust + Axum server (`omni2api` binary): OpenAI/Anthropic ingress, seat API
 ├── cli/         # oh-seat, the responder CLI (single static Rust binary)
 ├── protocol/    # Wire protocol and internal model
-├── sdks/        # SDK placeholders (python, rust, typescript)
 ├── tools/seat/  # Seat helpers and examples
 ├── deploy/      # Docker Compose, K8s, nginx, Anthropic bridge
 ├── assets/logo/ # The o_ identity (SVG set, PNG masters, usage notes)

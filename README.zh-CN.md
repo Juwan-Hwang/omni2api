@@ -109,7 +109,6 @@ omni2api/
 ├── server/      # Rust + Axum 服务器（omni2api 本体）：OpenAI/Anthropic 入口、席位 API
 ├── cli/         # oh-seat，应答方 CLI（单个静态 Rust 二进制）
 ├── protocol/    # 线协议与内部模型
-├── sdks/        # SDK 占位（python、rust、typescript）
 ├── tools/seat/  # 席位辅助工具与示例
 ├── deploy/      # Docker Compose、K8s、nginx、Anthropic 桥
 ├── assets/logo/ # o_ 品牌标志（SVG 全套、PNG 母版、使用说明）

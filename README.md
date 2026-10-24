@@ -16,7 +16,9 @@ that any AI tool can call.
 English · <a href="README.zh-CN.md">简体中文</a>
 </p>
 
-https://github.com/user-attachments/assets/0a75fab1-374c-4a95-9343-033678089a7e
+
+https://github.com/user-attachments/assets/fc7f4aec-02d1-4533-bd20-d441b5e993a9
+
 
 ## The idea
 

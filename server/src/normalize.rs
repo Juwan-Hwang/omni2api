@@ -34,7 +34,9 @@
 //! message must still reach the human, wrapper and all, rather than being
 //! dropped by a normalizer that does not know it.
 
-use crate::openai_compat::{ChatContent, ContentPart};
+use crate::openai_compat::{
+    file_part_url, is_missing_file_note, missing_file_note, ChatContent, ContentPart,
+};
 use crate::profile::ClientType;
 
 /// Extract the human-readable message from an inbound `user` message.
@@ -80,6 +82,37 @@ fn normalize_whole(client: &ClientType, text: &str) -> String {
 /// pure noise (Trae `REQUIREMENT:` blocks, reminder-only parts) contribute
 /// nothing and are skipped.
 fn normalize_parts(client: &ClientType, parts: &[ContentPart]) -> String {
+    // Notes for files sent by an id this server does not hold ride along
+    // after the message; they never stand in for the message itself.
+    let notes: Vec<String> = parts
+        .iter()
+        .filter_map(|p| match p.part_type.as_str() {
+            "text" => p
+                .text
+                .as_deref()
+                .filter(|t| is_missing_file_note(t))
+                .map(|t| t.trim().to_string()),
+            "file" => {
+                let f = p.file.as_ref()?;
+                if file_part_url(f).is_some() {
+                    return None;
+                }
+                Some(missing_file_note(
+                    f.get("filename").and_then(|v| v.as_str()).unwrap_or(""),
+                ))
+            }
+            _ => None,
+        })
+        .collect();
+    let with_notes = |msg: String| {
+        if notes.is_empty() {
+            msg
+        } else if msg.trim().is_empty() {
+            notes.join("\n")
+        } else {
+            format!("{msg}\n{}", notes.join("\n"))
+        }
+    };
     for part in parts.iter().rev() {
         if part.part_type != "text" {
             continue;
@@ -88,26 +121,28 @@ fn normalize_parts(client: &ClientType, parts: &[ContentPart]) -> String {
             Some(t) => t,
             None => continue,
         };
-        if is_noise_part(client, text) {
+        if is_noise_part(client, text) || is_missing_file_note(text) {
             continue;
         }
         let msg = normalize_whole(client, text);
         if !msg.trim().is_empty() {
-            return msg;
+            return with_notes(msg);
         }
     }
 
     // Nothing yielded a message — fall back to the raw text of the newest
     // text part rather than showing an empty bubble.
-    parts
-        .iter()
-        .rev()
-        .filter(|p| p.part_type == "text")
-        .filter_map(|p| p.text.as_deref())
-        .find(|t| !t.trim().is_empty())
-        .unwrap_or("")
-        .trim()
-        .to_string()
+    with_notes(
+        parts
+            .iter()
+            .rev()
+            .filter(|p| p.part_type == "text")
+            .filter_map(|p| p.text.as_deref())
+            .find(|t| !t.trim().is_empty() && !is_missing_file_note(t))
+            .unwrap_or("")
+            .trim()
+            .to_string(),
+    )
 }
 
 /// Whether a whole part is agent noise with no user content.
@@ -226,6 +261,28 @@ mod tests {
                 })
                 .collect(),
         )
+    }
+
+    #[test]
+    fn missing_file_note_never_replaces_the_message() {
+        let note = missing_file_note("gone.zip");
+        let c = parts(&["show this", &note]);
+        assert_eq!(
+            normalize_user_message(&ClientType::Unknown, &c),
+            format!("show this\n{note}")
+        );
+        let mut p = match parts(&["look"]) {
+            ChatContent::Parts(p) => p,
+            _ => unreachable!(),
+        };
+        p.push(ContentPart {
+            part_type: "file".into(),
+            text: None,
+            image_url: None,
+            file: Some(serde_json::json!({"file_id": "file-x", "filename": "a.pdf"})),
+        });
+        let m = normalize_user_message(&ClientType::Unknown, &ChatContent::Parts(p));
+        assert!(m.starts_with("look\n[file a.pdf:"), "{m}");
     }
 
     // --- WorkBuddy ---

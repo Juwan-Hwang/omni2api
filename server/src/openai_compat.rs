@@ -299,6 +299,20 @@ pub fn guess_mime(name: &str) -> &'static str {
     }
 }
 
+const MISSING_FILE_TAIL: &str = ": only a file_id was sent, its content is not available here]";
+
+/// The note standing in for a file the caller referenced by an id this
+/// server does not hold.
+pub fn missing_file_note(name: &str) -> String {
+    let sep = if name.is_empty() { "" } else { " " };
+    format!("[file{sep}{name}{MISSING_FILE_TAIL}")
+}
+
+pub fn is_missing_file_note(text: &str) -> bool {
+    let t = text.trim();
+    t.starts_with("[file") && t.ends_with(MISSING_FILE_TAIL)
+}
+
 /// The `image_url` object inside an image content part.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ImageUrl {
@@ -331,7 +345,7 @@ impl ChatContent {
                         Some(if f.and_then(file_part_url).is_some() {
                             format!("[文件{sep}{n}]")
                         } else {
-                            format!("[文件{sep}{n}: only a file_id was sent, its content is not available here]")
+                            missing_file_note(n)
                         })
                     }
                     _ => None,

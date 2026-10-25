@@ -170,6 +170,9 @@ fn fold_documents(body: &mut Value) {
                 Some("document") => {
                     if let Some(img) = document_as_image(p) {
                         *p = img;
+                    } else if p.pointer("/source/type").and_then(|t| t.as_str()) == Some("file") {
+                        let n = p.get("title").and_then(|t| t.as_str()).unwrap_or("");
+                        *p = json!({"type": "text", "text": crate::openai_compat::missing_file_note(n)});
                     }
                 }
                 Some("tool_result") => {
@@ -513,7 +516,7 @@ fn responses_content(content: &Value) -> Value {
                             }
                             None => {
                                 let n = p.get("filename").and_then(|v| v.as_str()).unwrap_or("");
-                                out.push(json!({"type": "text", "text": format!("[文件 {n}: only a file_id was sent, its content is not available here]")}));
+                                out.push(json!({"type": "text", "text": crate::openai_compat::missing_file_note(n)}));
                             }
                         }
                     }

@@ -222,6 +222,7 @@ mod tests {
                     part_type: "text".to_string(),
                     text: Some(t.to_string()),
                     image_url: None,
+                    file: None,
                 })
                 .collect(),
         )
@@ -389,6 +390,7 @@ mod tests {
                 part_type: "text".to_string(),
                 text: Some("<user_query>look</user_query>".to_string()),
                 image_url: None,
+                file: None,
             },
             ContentPart {
                 part_type: "image_url".to_string(),
@@ -397,6 +399,7 @@ mod tests {
                     url: "data:image/png;base64,AAA".to_string(),
                     detail: None,
                 }),
+                file: None,
             },
         ]);
         assert_eq!(

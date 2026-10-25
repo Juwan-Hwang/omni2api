@@ -151,6 +151,111 @@ fn fold_tool_references(body: &mut Value) {
     }
 }
 
+/// Anthropic `document` blocks (a PDF from Claude Code's Read, a file the
+/// person attached): the translator turns them into a text note at the top
+/// level and drops them inside tool results. Carry them as image blocks
+/// whose media type is the document's own plus its name, so they reach the
+/// seat as files on the same path pictures take.
+fn fold_documents(body: &mut Value) {
+    fn fold(parts: &mut [Value]) {
+        for p in parts.iter_mut() {
+            match p.get("type").and_then(|t| t.as_str()) {
+                Some("image")
+                    if p.pointer("/source/type").and_then(|t| t.as_str()) == Some("file") =>
+                {
+                    if let Some(img) = document_as_image(p) {
+                        *p = img;
+                    }
+                }
+                Some("document") => {
+                    if let Some(img) = document_as_image(p) {
+                        *p = img;
+                    }
+                }
+                Some("tool_result") => {
+                    if let Some(inner) = p.get_mut("content").and_then(|c| c.as_array_mut()) {
+                        fold(inner);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let Some(msgs) = body.get_mut("messages").and_then(|m| m.as_array_mut()) else {
+        return;
+    };
+    for m in msgs {
+        if let Some(parts) = m.get_mut("content").and_then(|c| c.as_array_mut()) {
+            fold(parts);
+        }
+    }
+}
+
+fn document_as_image(d: &Value) -> Option<Value> {
+    let src = d.get("source")?;
+    let title = d.get("title").and_then(|t| t.as_str());
+    let kind = src.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    let mime = src
+        .get("media_type")
+        .and_then(|t| t.as_str())
+        .unwrap_or("application/pdf");
+    let (mime, b64) = match kind {
+        "base64" => (mime.to_string(), src.get("data")?.as_str()?.to_string()),
+        "text" => (
+            if mime.is_empty() {
+                "text/plain".to_string()
+            } else {
+                mime.to_string()
+            },
+            crate::openai_compat::b64_encode(src.get("data")?.as_str()?.as_bytes()),
+        ),
+        "content" => {
+            let text = src
+                .get("content")
+                .and_then(|c| c.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .unwrap_or_default();
+            (
+                "text/plain".to_string(),
+                crate::openai_compat::b64_encode(text.as_bytes()),
+            )
+        }
+        "file" => {
+            let url = crate::api::files::data_url(src.get("file_id")?.as_str()?)?;
+            let (meta, b64) = url.strip_prefix("data:")?.split_once(',')?;
+            let media = meta.trim_end_matches(";base64").to_string();
+            return Some(
+                json!({"type": "image", "source": {"type": "base64", "media_type": media, "data": b64}}),
+            );
+        }
+        "url" => {
+            let url = src.get("url")?.as_str()?;
+            return Some(json!({"type": "image", "source": {"type": "url", "url": url}}));
+        }
+        _ => return None,
+    };
+    let name = title.map(str::to_string).unwrap_or_else(|| {
+        let ext = match mime.as_str() {
+            "application/pdf" => "pdf",
+            "text/plain" => "txt",
+            m => m.rsplit('/').next().unwrap_or("bin"),
+        };
+        format!("document.{ext}")
+    });
+    // The translator writes `data:{media_type};base64,{data}`.
+    let url = crate::openai_compat::named_data_url(&mime, Some(&name), "");
+    let media = url
+        .trim_start_matches("data:")
+        .trim_end_matches(";base64,")
+        .to_string();
+    Some(json!({"type": "image", "source": {"type": "base64", "media_type": media, "data": b64}}))
+}
+
 pub async fn messages(
     State(app): State<AppState>,
     principal: AuthPrincipal,
@@ -161,6 +266,7 @@ pub async fn messages(
 
     let mut body = body;
     fold_tool_references(&mut body);
+    fold_documents(&mut body);
     let req: MessageCreateRequest = match serde_json::from_value(body) {
         Ok(r) => r,
         Err(e) => {
@@ -399,6 +505,18 @@ fn responses_content(content: &Value) -> Value {
                             .unwrap_or_default();
                         out.push(json!({"type": "image_url", "image_url": {"url": url}}));
                     }
+                    "input_file" => {
+                        only_text = false;
+                        match crate::openai_compat::file_part_url(p) {
+                            Some(url) => {
+                                out.push(json!({"type": "image_url", "image_url": {"url": url}}))
+                            }
+                            None => {
+                                let n = p.get("filename").and_then(|v| v.as_str()).unwrap_or("");
+                                out.push(json!({"type": "text", "text": format!("[文件 {n}: only a file_id was sent, its content is not available here]")}));
+                            }
+                        }
+                    }
                     "refusal" => {
                         out.push(json!({"type": "text", "text": p.get("refusal").cloned().unwrap_or(json!(""))}));
                     }
@@ -558,7 +676,10 @@ pub(crate) fn responses_to_chat(body: &Value) -> Value {
                         // part: keep it as an image, not as nothing.
                         if let Some(Value::Array(parts)) = it.get("output") {
                             if parts.iter().any(|p| {
-                                p.get("type").and_then(|t| t.as_str()) == Some("input_image")
+                                matches!(
+                                    p.get("type").and_then(|t| t.as_str()),
+                                    Some("input_image") | Some("input_file")
+                                )
                             }) {
                                 messages.push(json!({
                                     "role": "tool",
@@ -1063,6 +1184,84 @@ pub async fn responses(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn documents_reach_the_seat_as_named_files() {
+        let mut body = json!({
+            "model": "m", "max_tokens": 10,
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "text", "text": "read this"},
+                    {"type": "document", "title": "a b.pdf", "source": {"type": "base64", "media_type": "application/pdf", "data": "JVBERg=="}}
+                ]},
+                {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Read", "input": {}}]},
+                {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": [
+                    {"type": "document", "source": {"type": "text", "media_type": "text/plain", "data": "hi"}}
+                ]}]}
+            ]
+        });
+        fold_documents(&mut body);
+        let req: anyllm_translate::anthropic::MessageCreateRequest =
+            serde_json::from_value(body).unwrap();
+        let config = anyllm_translate::TranslationConfig::builder()
+            .passthrough_unknown_models(true)
+            .build();
+        let out =
+            serde_json::to_string(&anyllm_translate::translate_request(&req, &config).unwrap())
+                .unwrap();
+        assert!(
+            out.contains("data:application/pdf;name=a+b.pdf;base64,JVBERg=="),
+            "{out}"
+        );
+        assert!(
+            out.contains("data:text/plain;name=document.txt;base64,aGk="),
+            "{out}"
+        );
+        assert_eq!(
+            crate::openai_compat::data_url_name("data:application/pdf;name=a+b%2F.pdf;base64,x")
+                .as_deref(),
+            Some("a b/.pdf")
+        );
+    }
+
+    #[test]
+    fn uploaded_file_ids_resolve() {
+        let id = crate::api::files::put(crate::api::files::StoredFile {
+            owner: "a".into(),
+            filename: "n.bin".into(),
+            mime: "application/octet-stream".into(),
+            purpose: "user_data".into(),
+            bytes: vec![0, 255, 1],
+            created_at: 0,
+        });
+        let v = responses_content(&json!([{"type": "input_file", "file_id": id}]));
+        assert!(
+            v.to_string()
+                .contains("data:application/octet-stream;name=n.bin;base64,AP8B"),
+            "{v}"
+        );
+        let mut body = json!({"messages": [{"role": "user", "content": [
+            {"type": "document", "source": {"type": "file", "file_id": id}}
+        ]}]});
+        fold_documents(&mut body);
+        assert_eq!(
+            body.pointer("/messages/0/content/0/source/data")
+                .and_then(|v| v.as_str()),
+            Some("AP8B")
+        );
+    }
+
+    #[test]
+    fn responses_input_file_keeps_its_name() {
+        let v = responses_content(&json!([
+            {"type": "input_text", "text": "see"},
+            {"type": "input_file", "filename": "r.csv", "file_data": "data:text/csv;base64,YSxi"},
+            {"type": "input_file", "file_id": "file-1", "filename": "x.pdf"}
+        ]));
+        let s = v.to_string();
+        assert!(s.contains("data:text/csv;name=r.csv;base64,YSxi"), "{s}");
+        assert!(s.contains("only a file_id"), "{s}");
+    }
 
     #[test]
     fn responses_usage_always_has_details() {

@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+mod files;
 mod input;
 mod mcp;
 
@@ -141,6 +142,45 @@ enum Cmd {
         /// (in the active conversation if it has one)
         invocation_id: Option<String>,
         /// Give up after this many seconds (exit 2)
+        #[arg(long, default_value_t = 100)]
+        timeout: u64,
+    },
+    /// Copy a file off the caller's machine through its shell (base64 chunks, sha256 checked).
+    /// Saved under $OMNI2API_HOME/files/<conv>/ unless -o is given. Relative paths: the caller's cwd.
+    Pull {
+        /// Path on the caller's machine
+        path: String,
+        #[arg(long, short = 'c')]
+        conv: Option<String>,
+        /// Local file or directory to write
+        #[arg(long, short = 'o')]
+        out: Option<String>,
+        /// Bytes per shell call (keep the base64 under the caller's output cut)
+        #[arg(long, default_value_t = 6000)]
+        chunk: usize,
+        /// Refuse files larger than this many bytes (every chunk stays in the caller's history)
+        #[arg(long, default_value_t = 1_048_576)]
+        max: u64,
+        /// Seconds to wait for each round of calls
+        #[arg(long, default_value_t = 100)]
+        timeout: u64,
+    },
+    /// Put a local file onto the caller's machine: its write tool for text, shell base64 otherwise (sha256 checked).
+    /// REMOTE defaults to the file's name in the caller's cwd; ending in / means a directory.
+    Push {
+        /// Local file
+        file: String,
+        /// Path on the caller's machine
+        remote: Option<String>,
+        #[arg(long, short = 'c')]
+        conv: Option<String>,
+        /// Bytes per shell call
+        #[arg(long, default_value_t = 49152)]
+        chunk: usize,
+        /// Refuse files larger than this many bytes
+        #[arg(long, default_value_t = 4_194_304)]
+        max: u64,
+        /// Seconds to wait for each call
         #[arg(long, default_value_t = 100)]
         timeout: u64,
     },
@@ -464,9 +504,9 @@ impl Ctx {
         }
     }
 
-    /// Save the images a caller attached to a message as files, so a
+    /// Save what a caller attached to a message (pictures, files) so a
     /// responder can open them with its own tools. Links stay links.
-    fn save_images(&self, c: &str, msg_id: &str) -> Vec<String> {
+    fn save_images(&self, c: &str, msg_id: &str) -> Vec<files::Saved> {
         let path = format!(
             "/v1/seat/history?conversation_id={}&limit=20&images=true",
             enc(c)
@@ -480,28 +520,13 @@ impl Ctx {
         else {
             return Vec::new();
         };
-        let dir = omni2api_home().join("images");
-        let _ = std::fs::create_dir_all(&dir);
-        let mut out = Vec::new();
-        for (i, img) in m["images"].as_array().into_iter().flatten().enumerate() {
-            let url = s(img, "url").unwrap_or("");
-            match data_url_bytes(url) {
-                Some((mime, bytes)) => {
-                    let ext = mime
-                        .rsplit('/')
-                        .next()
-                        .unwrap_or("bin")
-                        .replace("jpeg", "jpg");
-                    let f = dir.join(format!("{msg_id}-{}.{ext}", i + 1));
-                    if std::fs::write(&f, bytes).is_ok() {
-                        out.push(f.display().to_string());
-                    }
-                }
-                None if !url.is_empty() => out.push(url.to_string()),
-                None => {}
-            }
-        }
-        out
+        m["images"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .enumerate()
+            .filter_map(|(i, img)| files::save_url(s(img, "url").unwrap_or(""), c, msg_id, i + 1))
+            .collect()
     }
 
     fn call(&self, method: &str, path: &str, body: Option<Value>, timeout: u64) -> R<Value> {
@@ -869,35 +894,21 @@ fn cap_output(body: String, id: &str) -> String {
     )
 }
 
-/// Pictures a tool returned (data URLs saved under ~/.omni2api/images,
-/// links kept as they are).
-fn save_result_images(e: &Value) -> Vec<String> {
+/// Pictures and files a tool returned (data URLs saved under
+/// $OMNI2API_HOME, links kept as they are).
+fn save_result_images(e: &Value) -> Vec<files::Saved> {
     let Some(imgs) = e.get("images").and_then(|v| v.as_array()) else {
         return Vec::new();
     };
     let id = s(e, "invocation_id")
         .unwrap_or("result")
         .replace(['/', '\\', '.'], "_");
-    let dir = omni2api_home().join("images");
-    let _ = std::fs::create_dir_all(&dir);
-    let mut out = Vec::new();
-    for (i, url) in imgs.iter().filter_map(|v| v.as_str()).enumerate() {
-        match data_url_bytes(url) {
-            Some((mime, bytes)) => {
-                let ext = mime
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or("bin")
-                    .replace("jpeg", "jpg");
-                let f = dir.join(format!("{id}-{}.{ext}", i + 1));
-                if std::fs::write(&f, bytes).is_ok() {
-                    out.push(f.display().to_string());
-                }
-            }
-            None => out.push(url.to_string()),
-        }
-    }
-    out
+    let c = conv_id(e).unwrap_or("result");
+    imgs.iter()
+        .filter_map(|v| v.as_str())
+        .enumerate()
+        .filter_map(|(i, url)| files::save_url(url, c, &id, i + 1))
+        .collect()
 }
 
 /// `data:image/png;base64,...` → (mime, bytes).
@@ -951,14 +962,27 @@ fn print_event(e: &Value) {
                 })
                 .filter(|n| *n > 0)
             {
-                match e.get("image_files").and_then(|v| v.as_array()) {
-                    Some(f) if !f.is_empty() => {
-                        println!("[{n} image(s) attached, saved: open them with your own file/image tool]");
-                        for p in f.iter().filter_map(|v| v.as_str()) {
-                            println!("  image: {p}");
-                        }
+                let list = |k: &str| -> Vec<String> {
+                    e.get(k)
+                        .and_then(|v| v.as_array())
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|v| v.as_str().map(String::from))
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                };
+                let (imgs, other) = (list("image_files"), list("files"));
+                if imgs.is_empty() && other.is_empty() {
+                    println!("[{n} attachment(s): oh-seat history -c {c}]");
+                } else {
+                    println!("[{n} attachment(s), saved: open them with your own file/image tool]");
+                    for p in imgs {
+                        println!("  image: {p}");
                     }
-                    _ => println!("[{n} image(s) attached: oh-seat history -c {c}]"),
+                    for p in other {
+                        println!("  file: {p}");
+                    }
                 }
             }
         }
@@ -993,8 +1017,15 @@ fn print_event(e: &Value) {
                 "{}",
                 cap_output(body, s(e, "invocation_id").unwrap_or("result"))
             );
-            for p in save_result_images(e) {
-                println!("  image: {p}  (the tool returned a picture: open it with your own image/file tool)");
+            for f in save_result_images(e) {
+                if f.image {
+                    println!("  image: {}  (the tool returned a picture: open it with your own image/file tool)", files::describe(&f));
+                } else {
+                    println!(
+                        "  file: {}  (the tool returned a file, saved for you)",
+                        files::describe(&f)
+                    );
+                }
             }
         }
         t => {
@@ -1133,9 +1164,22 @@ fn cmd_next(cx: &mut Ctx, timeout: u64, all: bool) -> R<u8> {
                     && e.get("image_count").and_then(|v| v.as_u64()).unwrap_or(0) > 0;
                 if has_images {
                     if let (Some(c), Some(m)) = (conv_id(e), s(e, "message_id")) {
-                        let files = cx.save_images(c, m);
-                        if !files.is_empty() {
-                            e["image_files"] = json!(files);
+                        let saved = cx.save_images(c, m);
+                        let imgs: Vec<String> = saved
+                            .iter()
+                            .filter(|f| f.image)
+                            .map(|f| f.path.clone())
+                            .collect();
+                        let other: Vec<String> = saved
+                            .iter()
+                            .filter(|f| !f.image)
+                            .map(files::describe)
+                            .collect();
+                        if !imgs.is_empty() {
+                            e["image_files"] = json!(imgs);
+                        }
+                        if !other.is_empty() {
+                            e["files"] = json!(other);
                         }
                     }
                 }
@@ -2526,6 +2570,22 @@ fn run(cli: Cli) -> R<u8> {
             .map_err(|m| Fail(USAGE, m))?;
             wait_result(&mut cx, &inv, timeout)
         }
+        Cmd::Pull {
+            path,
+            conv,
+            out,
+            chunk,
+            max,
+            timeout,
+        } => files::cmd_pull(&mut cx, path, conv, out, chunk, max, timeout),
+        Cmd::Push {
+            file,
+            remote,
+            conv,
+            chunk,
+            max,
+            timeout,
+        } => files::cmd_push(&mut cx, file, remote, conv, chunk, max, timeout),
         Cmd::Caps {
             conv,
             full,

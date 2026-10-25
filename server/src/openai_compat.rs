@@ -162,6 +162,141 @@ pub struct ContentPart {
     pub part_type: String,
     pub text: Option<String>,
     pub image_url: Option<ImageUrl>,
+    /// OpenAI `file` part: `{filename, file_data (data URL), file_id}`.
+    #[serde(default)]
+    pub file: Option<serde_json::Value>,
+}
+
+/// A data URL for an attached file, its name carried as a parameter
+/// (`data:application/pdf;name=report.pdf;base64,...`, RFC 2397) so the
+/// file rides every path images already take and keeps its name.
+pub fn named_data_url(mime: &str, name: Option<&str>, b64: &str) -> String {
+    let mime = if mime.trim().is_empty() {
+        "application/octet-stream"
+    } else {
+        mime.trim()
+    };
+    match name.map(str::trim).filter(|n| !n.is_empty()) {
+        Some(n) => format!("data:{mime};name={};base64,{b64}", encode_param(n)),
+        None => format!("data:{mime};base64,{b64}"),
+    }
+}
+
+fn encode_param(s: &str) -> String {
+    let mut o = String::new();
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || b"-_.~ ".contains(&b) {
+            o.push(if b == b' ' { '+' } else { b as char });
+        } else {
+            o.push_str(&format!("%{b:02X}"));
+        }
+    }
+    o
+}
+
+/// The `name=` parameter of a data URL, decoded.
+pub fn data_url_name(url: &str) -> Option<String> {
+    let meta = url.strip_prefix("data:")?.split(',').next()?;
+    let raw = meta.split(';').find_map(|p| p.strip_prefix("name="))?;
+    let mut out = Vec::new();
+    let b = raw.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'%' if i + 2 < b.len() => {
+                let h = std::str::from_utf8(&b[i + 1..i + 3]).ok();
+                match h.and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                    Some(v) => {
+                        out.push(v);
+                        i += 3;
+                        continue;
+                    }
+                    None => out.push(b'%'),
+                }
+            }
+            b'+' => out.push(b' '),
+            c => out.push(c),
+        }
+        i += 1;
+    }
+    String::from_utf8(out).ok().filter(|n| !n.is_empty())
+}
+
+/// OpenAI `file` part / Responses `input_file` as a URL: a named data URL,
+/// a link, or (an id this server cannot fetch) None.
+pub fn file_part_url(f: &serde_json::Value) -> Option<String> {
+    let name = f.get("filename").and_then(|v| v.as_str());
+    if let Some(d) = f.get("file_data").and_then(|v| v.as_str()) {
+        let d = d.trim();
+        if let Some(rest) = d.strip_prefix("data:") {
+            let (meta, b64) = rest.split_once(',')?;
+            let mime = meta.split(';').next().unwrap_or("");
+            let mime = if mime.is_empty() {
+                guess_mime(name.unwrap_or(""))
+            } else {
+                mime
+            };
+            return Some(named_data_url(mime, name, b64));
+        }
+        // Bare base64 (some SDKs send it without the data: prefix).
+        return Some(named_data_url(guess_mime(name.unwrap_or("")), name, d));
+    }
+    if let Some(u) = f
+        .get("file_id")
+        .and_then(|v| v.as_str())
+        .and_then(crate::api::files::data_url)
+    {
+        return Some(u);
+    }
+    f.get("file_url")
+        .and_then(|v| v.as_str())
+        .map(|u| u.trim().to_string())
+        .filter(|u| !u.is_empty())
+}
+
+pub fn b64_encode(bytes: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut o = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for c in bytes.chunks(3) {
+        let n = (c[0] as u32) << 16
+            | (*c.get(1).unwrap_or(&0) as u32) << 8
+            | *c.get(2).unwrap_or(&0) as u32;
+        o.push(T[(n >> 18) as usize & 63] as char);
+        o.push(T[(n >> 12) as usize & 63] as char);
+        o.push(if c.len() > 1 {
+            T[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        o.push(if c.len() > 2 {
+            T[n as usize & 63] as char
+        } else {
+            '='
+        });
+    }
+    o
+}
+
+/// A mime type from a file name, for parts that send none.
+pub fn guess_mime(name: &str) -> &'static str {
+    let l = name.to_lowercase();
+    let ext = l.rsplit('.').next().unwrap_or("");
+    match ext {
+        "pdf" => "application/pdf",
+        "txt" | "log" => "text/plain",
+        "md" => "text/markdown",
+        "csv" => "text/csv",
+        "json" => "application/json",
+        "html" | "htm" => "text/html",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "zip" => "application/zip",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        _ => "application/octet-stream",
+    }
 }
 
 /// The `image_url` object inside an image content part.
@@ -186,6 +321,19 @@ impl ChatContent {
                 .filter_map(|p| match p.part_type.as_str() {
                     "text" => p.text.clone(),
                     "image_url" => Some("[图片]".to_string()),
+                    "file" => {
+                        let f = p.file.as_ref();
+                        let n = f
+                            .and_then(|f| f.get("filename"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let sep = if n.is_empty() { "" } else { " " };
+                        Some(if f.and_then(file_part_url).is_some() {
+                            format!("[文件{sep}{n}]")
+                        } else {
+                            format!("[文件{sep}{n}: only a file_id was sent, its content is not available here]")
+                        })
+                    }
                     _ => None,
                 })
                 .collect::<Vec<_>>()
@@ -201,12 +349,15 @@ impl ChatContent {
         match self {
             ChatContent::Parts(parts) => parts
                 .iter()
-                .filter(|p| p.part_type == "image_url")
-                .filter_map(|p| {
-                    p.image_url
+                .filter_map(|p| match p.part_type.as_str() {
+                    "image_url" => p
+                        .image_url
                         .as_ref()
                         .map(|i| i.url.trim().to_string())
-                        .filter(|u| !u.is_empty())
+                        .filter(|u| !u.is_empty()),
+                    // Files ride with images as named data URLs.
+                    "file" => p.file.as_ref().and_then(file_part_url),
+                    _ => None,
                 })
                 .collect(),
             _ => Vec::new(),

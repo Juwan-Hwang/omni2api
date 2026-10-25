@@ -84,6 +84,17 @@ pub fn build_router(state: AppState) -> Router {
             post(api::adapters::count_tokens),
         )
         .route("/v1/responses", post(api::adapters::responses))
+        .route(
+            "/v1/files",
+            post(api::files::upload)
+                .get(api::files::list)
+                .layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/v1/files/:file_id",
+            get(api::files::get_meta).delete(api::files::delete),
+        )
+        .route("/v1/files/:file_id/content", get(api::files::content))
         .route("/v1/models", get(list_models))
         .route("/v1/models/:model_id", get(get_model))
         // A base URL configured as `.../v1` by a client that appends `/v1`

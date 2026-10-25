@@ -1099,7 +1099,8 @@ fn process_inbound_messages(
                 .enumerate()
                 .map(|(i, url)| crate::model::content::Attachment {
                     id: format!("att_{}_{}", i, Uuid::now_v7().simple()),
-                    filename: format!("image-{}.png", i + 1),
+                    filename: crate::openai_compat::data_url_name(url)
+                        .unwrap_or_else(|| format!("image-{}.png", i + 1)),
                     content_type: guess_image_type(url),
                     size_bytes: url.len() as u64,
                     url: url.clone(),

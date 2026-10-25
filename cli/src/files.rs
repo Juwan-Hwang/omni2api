@@ -1,11 +1,10 @@
 //! Files between the seat and the caller, through the caller's own tools.
 //!
 //! Inbound attachments (a file part, a PDF from Read) arrive as named data
-//! URLs and are saved under `$OMNI2API_HOME/files/<conv>/`. `pull` copies
-//! any file off the caller's machine by reading it in base64 chunks through
-//! its shell (each chunk under the caller's output truncation), `push`
-//! writes one onto it (its write tool for text, shell base64 otherwise);
-//! both check sha256.
+//! URLs and are saved under `$OMNI2API_HOME/files/<conv>/`. There is no
+//! pull: the seat works on the caller's files in place with the caller's
+//! tools. `push` writes a file onto the caller's machine (its write tool for
+//! text, shell base64 otherwise), sha256 checked.
 
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -346,12 +345,6 @@ fn output_of(e: &Value) -> String {
 }
 
 /// The text between our markers, harness headers and footers dropped.
-fn between(out: &str, a: &str, b: &str) -> Option<String> {
-    let i = out.find(a)? + a.len();
-    let j = out[i..].find(b)? + i;
-    Some(out[i..j].chars().filter(|c| !c.is_whitespace()).collect())
-}
-
 fn sq(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
@@ -404,6 +397,7 @@ fn b64(bytes: &[u8]) -> String {
     o
 }
 
+#[cfg(test)]
 fn unb64(s: &str) -> Option<Vec<u8>> {
     data_url_bytes(&format!("data:x;base64,{s}")).map(|(_, b)| b)
 }
@@ -418,159 +412,8 @@ fn no_shell(c: &str, tools: &[Value], what: &str) -> Fail {
     )
 }
 
-// ── pull ──
-
-pub fn cmd_pull(
-    cx: &mut Ctx,
-    remote: String,
-    conv: Option<String>,
-    out: Option<String>,
-    chunk: usize,
-    max: u64,
-    timeout: u64,
-) -> R<u8> {
-    let c = cx.conv(conv)?;
-    let tools = cx.tools_for(&c, false);
-    let caps = cx.st.caps.get(&c).cloned().unwrap_or_default();
-    let sh = find_shell(&tools, &caps).ok_or_else(|| no_shell(&c, &tools, "read files"))?;
-    let path = remote_abs(cx, &c, &remote, sh.kind);
-    let chunk = chunk.clamp(1024, 1 << 20);
-    // 1. size and hash
-    let stat = match sh.kind {
-        Shell::Posix => format!(
-            "f={}; printf 'OHS:'; wc -c < \"$f\" | tr -d ' \\n'; printf ':'; (sha256sum \"$f\" 2>/dev/null || shasum -a 256 \"$f\") | cut -c1-64; printf ':OHE\\n'",
-            sq(&path)
-        ),
-        Shell::Power => format!(
-            "$f={}; $i=Get-Item -LiteralPath $f; 'OHS:' + $i.Length + ':' + (Get-FileHash -Algorithm SHA256 -LiteralPath $f).Hash.ToLower() + ':OHE'",
-            psq(&path)
-        ),
-    };
-    let r = run_calls(
-        cx,
-        &c,
-        vec![(sh.name.clone(), json!({ &sh.param: stat }))],
-        timeout,
-    )?;
-    let o = output_of(&r[0]);
-    let info = o
-        .find("OHS:")
-        .and_then(|i| o[i + 4..].split(":OHE").next())
-        .map(|x| x.trim().to_string());
-    let (size, want) = match info.as_deref().and_then(|x| x.split_once(':')) {
-        Some((n, h)) if n.trim().parse::<u64>().is_ok() && h.trim().len() == 64 => {
-            (n.trim().parse::<u64>().unwrap(), h.trim().to_lowercase())
-        }
-        _ => {
-            return Err(Fail(
-                crate::TOOL_ERR,
-                format!("could not read {path} on the caller: {}", o.trim()),
-            ))
-        }
-    };
-    if size > max {
-        return Err(Fail(
-            USAGE,
-            format!(
-                "{path} is {} — over --max {} ({} chunk calls, and every chunk stays in the caller's conversation). Ask the person to attach it, or raise --max",
-                human(size),
-                human(max),
-                size.div_ceil(chunk as u64)
-            ),
-        ));
-    }
-    // 2. chunks, several calls per round
-    let n = size.div_ceil(chunk as u64) as usize;
-    let mut data: Vec<u8> = Vec::with_capacity(size as usize);
-    let per_round = 6;
-    let mut i = 0;
-    while i < n {
-        let k = (n - i).min(per_round);
-        let calls: Vec<(String, Value)> = (i..i + k)
-            .map(|j| {
-                let cmd = match sh.kind {
-                    Shell::Posix => format!(
-                        "printf 'OHB:'; dd if={} bs={chunk} skip={j} count=1 2>/dev/null | base64 | tr -d '\\n'; printf ':OHE\\n'",
-                        sq(&path)
-                    ),
-                    Shell::Power => format!(
-                        "$s=[IO.File]::OpenRead({}); $b=New-Object byte[] {chunk}; [void]$s.Seek({},0); $n=$s.Read($b,0,{chunk}); $s.Close(); 'OHB:' + [Convert]::ToBase64String($b,0,$n) + ':OHE'",
-                        psq(&path),
-                        j as u64 * chunk as u64
-                    ),
-                };
-                (sh.name.clone(), json!({ &sh.param: cmd }))
-            })
-            .collect();
-        let rs = run_calls(cx, &c, calls, timeout)?;
-        for (j, e) in rs.iter().enumerate() {
-            let o = output_of(e);
-            let part = between(&o, "OHB:", ":OHE").and_then(|b| unb64(&b));
-            match part {
-                Some(p) => data.extend(p),
-                None => {
-                    return Err(Fail(
-                        crate::TOOL_ERR,
-                        format!(
-                            "chunk {}/{n} of {path} came back unreadable (the caller may cut long output: try --chunk {}): {}",
-                            i + j + 1,
-                            chunk / 2,
-                            o.chars().take(300).collect::<String>()
-                        ),
-                    ))
-                }
-            }
-        }
-        i += k;
-    }
-    let got = sha256_hex(&data);
-    if data.len() as u64 != size || got != want {
-        return Err(Fail(
-            crate::TOOL_ERR,
-            format!(
-                "{path}: got {} bytes sha256 {got}, the caller reports {size} bytes sha256 {want} (did the file change meanwhile?)",
-                data.len()
-            ),
-        ));
-    }
-    let name = path
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or("file")
-        .to_string();
-    let local = match out {
-        Some(o) => {
-            let p = PathBuf::from(o);
-            let p = if p.is_dir() {
-                p.join(safe_name(&name))
-            } else {
-                p
-            };
-            if let Some(d) = p.parent().filter(|d| !d.as_os_str().is_empty()) {
-                let _ = std::fs::create_dir_all(d);
-            }
-            std::fs::write(&p, &data).map_err(|e| Fail(USAGE, format!("{}: {e}", p.display())))?;
-            p
-        }
-        None => write_unique(&conv_dir(&c), &name, &data)
-            .ok_or_else(|| Fail(USAGE, "could not write under OMNI2API_HOME/files".into()))?,
-    };
-    if cx.json {
-        cx.out(&json!({"pulled": path, "local": local.display().to_string(), "bytes": size, "sha256": got, "calls": n + 1}));
-    } else {
-        println!(
-            "pulled {path} -> {}  ({}, sha256 ok, {} call(s))",
-            local.display(),
-            human(size),
-            n + 1
-        );
-    }
-    Ok(OK)
-}
-
 // ── push ──
 
-#[allow(clippy::too_many_arguments)]
 pub fn cmd_push(
     cx: &mut Ctx,
     local: String,
@@ -758,10 +601,6 @@ mod tests {
         assert_eq!(
             sha256_hex(b"abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-        );
-        assert_eq!(
-            between("x\nOHB:YW\nJj:OHE\n", "OHB:", ":OHE").as_deref(),
-            Some("YWJj")
         );
     }
 

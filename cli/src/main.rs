@@ -145,26 +145,6 @@ enum Cmd {
         #[arg(long, default_value_t = 100)]
         timeout: u64,
     },
-    /// Copy a file off the caller's machine through its shell (base64 chunks, sha256 checked).
-    /// Saved under $OMNI2API_HOME/files/<conv>/ unless -o is given. Relative paths: the caller's cwd.
-    Pull {
-        /// Path on the caller's machine
-        path: String,
-        #[arg(long, short = 'c')]
-        conv: Option<String>,
-        /// Local file or directory to write
-        #[arg(long, short = 'o')]
-        out: Option<String>,
-        /// Bytes per shell call (keep the base64 under the caller's output cut)
-        #[arg(long, default_value_t = 6000)]
-        chunk: usize,
-        /// Refuse files larger than this many bytes (every chunk stays in the caller's history)
-        #[arg(long, default_value_t = 1_048_576)]
-        max: u64,
-        /// Seconds to wait for each round of calls
-        #[arg(long, default_value_t = 100)]
-        timeout: u64,
-    },
     /// Put a local file onto the caller's machine: its write tool for text, shell base64 otherwise (sha256 checked).
     /// REMOTE defaults to the file's name in the caller's cwd; ending in / means a directory.
     Push {
@@ -2570,14 +2550,6 @@ fn run(cli: Cli) -> R<u8> {
             .map_err(|m| Fail(USAGE, m))?;
             wait_result(&mut cx, &inv, timeout)
         }
-        Cmd::Pull {
-            path,
-            conv,
-            out,
-            chunk,
-            max,
-            timeout,
-        } => files::cmd_pull(&mut cx, path, conv, out, chunk, max, timeout),
         Cmd::Push {
             file,
             remote,

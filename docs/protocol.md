@@ -209,6 +209,7 @@ When the human's client sends `tool.invoke` as its reply to a turn, the server d
 | Route | Purpose |
 |---|---|
 | `POST /v1/chat/completions` | OpenAI-compatible ingress; SSE when `stream: true` |
+| `POST /v1/files`, `GET /v1/files`, `GET`/`DELETE /v1/files/{file_id}`, `GET /v1/files/{file_id}/content` | OpenAI-style file store (caller key, multipart `file` + `purpose`); `file_id` resolves in OpenAI `file`/`input_file` and Anthropic `document` (`source.type: file`). Kept in memory, oldest dropped past 512 MB |
 | `GET /v1/replies/{invocation_id}` | Long-poll an async reply. `?wait=<secs>` (default 30, max 300) holds the connection and returns as soon as the human replies, otherwise `202` while still pending |
 
 Request headers that change ingress behaviour:

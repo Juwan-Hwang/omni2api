@@ -73,8 +73,10 @@ What the server does for whoever sits in the seat:
   command. Exit codes are recognised across callers.
 - **Many callers at once.** Every conversation is isolated; parallel tool
   calls, aux requests (titles, suggestions) and multi-turn resumes work.
-- **Images** from callers and from tool results are saved locally for the
-  seat.
+- **Images and files** from callers and from tool results (OpenAI `file` /
+  `input_file`, Anthropic `document`, a PDF from Claude Code's Read, any
+  binary) are saved locally for the seat. Standard `/v1/files` uploads and
+  `file_id` references work too.
 
 ## Quick start
 

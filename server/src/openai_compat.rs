@@ -334,7 +334,15 @@ impl ChatContent {
                 .iter()
                 .filter_map(|p| match p.part_type.as_str() {
                     "text" => p.text.clone(),
-                    "image_url" => Some("[图片]".to_string()),
+                    "image_url" => Some(match p.image_url.as_ref().map(|u| u.url.as_str()) {
+                        Some(u) if u.starts_with("data:") && !u.starts_with("data:image/") => {
+                            match data_url_name(u) {
+                                Some(n) => format!("[文件 {n}]"),
+                                None => "[文件]".to_string(),
+                            }
+                        }
+                        _ => "[图片]".to_string(),
+                    }),
                     "file" => {
                         let f = p.file.as_ref();
                         let n = f

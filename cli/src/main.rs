@@ -145,25 +145,6 @@ enum Cmd {
         #[arg(long, default_value_t = 100)]
         timeout: u64,
     },
-    /// Put a local file onto the caller's machine: its write tool for text, shell base64 otherwise (sha256 checked).
-    /// REMOTE defaults to the file's name in the caller's cwd; ending in / means a directory.
-    Push {
-        /// Local file
-        file: String,
-        /// Path on the caller's machine
-        remote: Option<String>,
-        #[arg(long, short = 'c')]
-        conv: Option<String>,
-        /// Bytes per shell call
-        #[arg(long, default_value_t = 49152)]
-        chunk: usize,
-        /// Refuse files larger than this many bytes
-        #[arg(long, default_value_t = 4_194_304)]
-        max: u64,
-        /// Seconds to wait for each call
-        #[arg(long, default_value_t = 100)]
-        timeout: u64,
-    },
     /// The caller's tools and system prompt for a conversation
     Caps {
         #[arg(long, short = 'c')]
@@ -2550,14 +2531,6 @@ fn run(cli: Cli) -> R<u8> {
             .map_err(|m| Fail(USAGE, m))?;
             wait_result(&mut cx, &inv, timeout)
         }
-        Cmd::Push {
-            file,
-            remote,
-            conv,
-            chunk,
-            max,
-            timeout,
-        } => files::cmd_push(&mut cx, file, remote, conv, chunk, max, timeout),
         Cmd::Caps {
             conv,
             full,

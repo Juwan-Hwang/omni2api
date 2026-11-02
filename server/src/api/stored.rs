@@ -46,8 +46,17 @@ fn running() -> &'static Mutex<HashMap<String, tokio::task::AbortHandle>> {
 
 pub fn put(id: &str, s: Stored) {
     let mut g = store().lock().unwrap();
+    let event =
+        g.0.get(id)
+            .and_then(|old| crate::api::webhooks::transition(&old.obj, &s.obj))
+            .map(|k| (s.owner.clone(), k));
     if g.0.insert(id.to_string(), s).is_none() {
         g.1.push(id.to_string());
+    }
+    if let Some((owner, kind)) = event {
+        drop(g);
+        crate::api::webhooks::fire(&owner, kind, id);
+        return;
     }
     while g.1.len() > KEEP {
         let old = g.1.remove(0);
@@ -67,8 +76,17 @@ pub fn get(owner: &str, id: &str) -> Option<Stored> {
 
 /// Change a stored object in place.
 pub fn update(id: &str, f: impl FnOnce(&mut Stored)) {
-    if let Some(s) = store().lock().unwrap().0.get_mut(id) {
+    let event = {
+        let mut g = store().lock().unwrap();
+        let Some(s) = g.0.get_mut(id) else {
+            return;
+        };
+        let before = s.obj.clone();
         f(s);
+        crate::api::webhooks::transition(&before, &s.obj).map(|k| (s.owner.clone(), k))
+    };
+    if let Some((owner, kind)) = event {
+        crate::api::webhooks::fire(&owner, kind, id);
     }
 }
 

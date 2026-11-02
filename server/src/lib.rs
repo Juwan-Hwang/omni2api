@@ -21,7 +21,7 @@ pub mod storage;
 pub mod ws;
 
 use axum::middleware::from_fn_with_state;
-use axum::routing::{delete, get, patch, post};
+use axum::routing::{any, delete, get, patch, post};
 use axum::Router;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
@@ -345,6 +345,197 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/evals/:id/runs/:run_id/output_items/:item_id",
             get(api::evals::get_output_item),
         )
+        // ChatKit (beta) sessions and threads; the protocol is public.
+        .route("/v1/chatkit/sessions", post(api::chatkit::create_session))
+        .route(
+            "/v1/chatkit/sessions/:id/cancel",
+            post(api::chatkit::cancel_session),
+        )
+        .route("/v1/chatkit/threads", get(api::chatkit::list_threads))
+        .route(
+            "/v1/chatkit/threads/:id",
+            get(api::chatkit::get_thread).delete(api::chatkit::delete_thread),
+        )
+        .route(
+            "/v1/chatkit/threads/:id/items",
+            get(api::chatkit::list_items),
+        )
+        .route(
+            "/v1/webhook_endpoints",
+            post(api::webhooks::create).get(api::webhooks::list),
+        )
+        .route(
+            "/v1/webhook_endpoints/:id",
+            get(api::webhooks::get)
+                .post(api::webhooks::update)
+                .delete(api::webhooks::delete),
+        )
+        .route(
+            "/v1/webhook_endpoints/:id/rotate_secret",
+            post(api::webhooks::rotate_secret),
+        )
+        .route("/v1/webhook_endpoints/:id/test", post(api::webhooks::test))
+        .route("/v1/webhook_event_types", get(api::webhooks::event_types))
+        .route("/v1/decisions", post(api::decisions::create))
+        .route(
+            "/v1/content_provenance_checks",
+            post(api::decisions::provenance).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        // Platform administration (organization, projects, safety cases)
+        // and phone-call sessions have no meaning on a seat.
+        .route("/v1/organization/*rest", any(api::task::not_offered))
+        .route("/v1/projects/*rest", any(api::task::not_offered))
+        .route("/v1/safety/*rest", any(api::task::not_offered))
+        .route("/v1/live/*rest", any(api::task::not_offered))
+        // The Agents API (beta).
+        .route(
+            "/v1/agents",
+            post(api::agents::create_agent).get(api::agents::list_agents),
+        )
+        .route(
+            "/v1/agents/:agent_id",
+            get(api::agents::get_agent)
+                .post(api::agents::update_agent)
+                .delete(api::agents::delete_agent),
+        )
+        .route(
+            "/v1/agents/sessions",
+            post(api::agents::create_session).get(api::agents::list_sessions),
+        )
+        .route(
+            "/v1/agents/sessions/:id",
+            get(api::agents::get_session)
+                .post(api::agents::update_session)
+                .delete(api::agents::delete_session),
+        )
+        .route(
+            "/v1/agents/sessions/:id/events",
+            post(api::agents::create_events).get(api::agents::stream_events),
+        )
+        .route(
+            "/v1/agents/sessions/:id/items",
+            get(api::agents::list_items),
+        )
+        .route(
+            "/v1/agents/sessions/:id/turns",
+            get(api::agents::list_turns),
+        )
+        .route(
+            "/v1/agents/sessions/:id/turns/:turn",
+            get(api::agents::get_turn),
+        )
+        .route(
+            "/v1/agents/sessions/:id/turns/:turn/items",
+            get(api::agents::list_turn_items),
+        )
+        .route(
+            "/v1/agents/sessions/:id/traces",
+            get(api::agents::empty_list),
+        )
+        .route(
+            "/v1/agents/sessions/:id/artifacts",
+            get(api::agents::empty_list),
+        )
+        .route(
+            "/v1/agents/sessions/:id/subagents",
+            get(api::agents::empty_list),
+        )
+        .route(
+            "/v1/agents/sessions/:id/artifacts/:art",
+            get(api::agents::none_found).delete(api::agents::none_found),
+        )
+        .route(
+            "/v1/agents/sessions/:id/artifacts/:art/content",
+            get(api::agents::none_found),
+        )
+        .route(
+            "/v1/agents/sessions/:id/subagents/:sub",
+            get(api::agents::none_found),
+        )
+        .route(
+            "/v1/agents/sessions/:id/subagents/:sub/items",
+            get(api::agents::none_found),
+        )
+        .route(
+            "/v1/agents/sessions/:id/subagents/:sub/turns",
+            get(api::agents::none_found),
+        )
+        .route(
+            "/v1/agents/sessions/:id/subagents/:sub/turns/:turn",
+            get(api::agents::none_found),
+        )
+        .route(
+            "/v1/agents/sessions/:id/subagents/:sub/turns/:turn/items",
+            get(api::agents::none_found),
+        )
+        .route(
+            "/v1/agents/environments",
+            post(api::agents::create_environment).get(api::agents::list_environments),
+        )
+        .route(
+            "/v1/agents/environments/:id",
+            get(api::agents::get_environment),
+        )
+        .route(
+            "/v1/agents/environments/:id/files",
+            post(api::agents::create_environment_file).get(api::agents::list_environment_files),
+        )
+        .route(
+            "/v1/agents/environments/templates",
+            post(api::agents::create_template).get(api::agents::list_templates),
+        )
+        .route(
+            "/v1/agents/environments/templates/:id",
+            get(api::agents::get_template)
+                .post(api::agents::update_template)
+                .delete(api::agents::delete_template),
+        )
+        .route(
+            "/v1/agents/automations",
+            post(api::agents::create_automation).get(api::agents::list_automations),
+        )
+        .route(
+            "/v1/agents/automations/:id",
+            get(api::agents::get_automation)
+                .post(api::agents::update_automation)
+                .delete(api::agents::delete_automation),
+        )
+        .route(
+            "/v1/agents/automations/:id/pause",
+            post(api::agents::pause_automation),
+        )
+        .route(
+            "/v1/agents/automations/:id/resume",
+            post(api::agents::resume_automation),
+        )
+        .route(
+            "/v1/agents/automations/:id/invocations",
+            post(api::agents::create_invocation).get(api::agents::list_invocations),
+        )
+        .route(
+            "/v1/agents/automations/:id/invocations/:inv",
+            get(api::agents::get_invocation),
+        )
+        .route(
+            "/v1/vaults",
+            post(api::agents::create_vault).get(api::agents::list_vaults),
+        )
+        .route(
+            "/v1/vaults/:id",
+            get(api::agents::get_vault)
+                .post(api::agents::update_vault)
+                .delete(api::agents::delete_vault),
+        )
+        .route(
+            "/v1/vaults/:id/credentials",
+            post(api::agents::create_credential).get(api::agents::list_credentials),
+        )
+        .route(
+            "/v1/vaults/:id/credentials/:cred",
+            get(api::agents::get_credential)
+                .post(api::agents::update_credential)
+                .delete(api::agents::delete_credential),
+        )
         .route(
             "/v1/assistants",
             post(api::assistants::create_assistant).get(api::assistants::list_assistants),
@@ -582,6 +773,8 @@ pub fn build_router(state: AppState) -> Router {
         // Realtime authenticates itself: browsers send the key as a
         // WebSocket subprotocol, which no header middleware sees.
         .route("/v1/realtime", get(api::realtime::realtime))
+        // ChatKit's protocol takes a session's client secret as well as a key.
+        .route("/v1/chatkit", post(api::chatkit::protocol))
         .route(
             "/v1/realtime/translations",
             get(api::realtime::translations),

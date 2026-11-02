@@ -68,6 +68,15 @@ pub fn data_url(id: &str) -> Option<String> {
 }
 
 /// A stored file, whoever owns it (ids are unguessable).
+/// When a seat answered an API task with exactly these bytes for this
+/// owner: (what made it, when).
+pub fn made_by_seat(owner: &str, bytes: &[u8]) -> Option<(String, i64)> {
+    let g = store().lock().unwrap();
+    g.0.values()
+        .find(|f| f.owner == owner && f.purpose == OUTPUT_PURPOSE && f.bytes == bytes)
+        .map(|f| ("omni2api-seat".to_string(), f.created_at))
+}
+
 pub fn get(id: &str) -> Option<StoredFile> {
     store().lock().unwrap().0.get(id.trim()).cloned()
 }

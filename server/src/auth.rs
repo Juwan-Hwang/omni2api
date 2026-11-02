@@ -100,7 +100,19 @@ pub async fn require_api_key(
         || path.starts_with("/v1/fine_tuning")
         || path.starts_with("/v1/assistants")
         || path.starts_with("/v1/threads")
-        || path.starts_with("/v1/skills");
+        || path.starts_with("/v1/skills")
+        || path.starts_with("/v1/vaults")
+        || path.starts_with("/v1/chatkit")
+        || path.starts_with("/v1/webhook_endpoints")
+        || path == "/v1/webhook_event_types"
+        || path == "/v1/decisions"
+        || path == "/v1/content_provenance_checks"
+        || path.starts_with("/v1/organization")
+        || path.starts_with("/v1/projects")
+        || path.starts_with("/v1/safety")
+        || path.starts_with("/v1/live/")
+        // The Agents API; `PATCH /v1/agents/:id` (rename) is the responder's.
+        || (path.starts_with("/v1/agents") && request.method() != axum::http::Method::PATCH);
     // Shared by OpenAI Conversations (caller) and history (responder):
     // the handlers check which side a request is on.
     let shared = path == "/v1/conversations" || path.starts_with("/v1/conversations/");

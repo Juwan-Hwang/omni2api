@@ -49,6 +49,20 @@ pub fn error(status: StatusCode, kind: &str, code: &str, message: &str) -> Respo
         .into_response()
 }
 
+/// Endpoints this server does not offer: OpenAI platform administration
+/// (organization, projects, safety cases) and live phone-call sessions.
+pub async fn not_offered(uri: axum::http::Uri) -> Response {
+    error(
+        StatusCode::NOT_IMPLEMENTED,
+        "invalid_request_error",
+        "not_implemented",
+        &format!(
+            "{} is not offered by this server: it manages an OpenAI organization or phone calls, which a seat has none of.",
+            uri.path()
+        ),
+    )
+}
+
 pub fn invalid(message: &str) -> Response {
     error(
         StatusCode::BAD_REQUEST,
@@ -244,6 +258,7 @@ pub fn check_reply(api: &str, spec: &Value, text: &str) -> Result<(), String> {
         "moderations" => crate::api::moderations::parse_verdicts(text, spec).map(|_| ()),
         "vector_stores.search" => crate::api::vector_stores::parse_hits(text, spec).map(|_| ()),
         "graders" => crate::api::evals::check_grade(text, spec),
+        "decisions" => crate::api::decisions::parse_answers(text, spec).map(|_| ()),
         _ => Ok(()),
     }
 }

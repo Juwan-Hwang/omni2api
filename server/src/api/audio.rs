@@ -186,7 +186,11 @@ pub async fn speech(
         expected,
         true,
         Value::Null,
-        if sse { Delivery::Sse } else { Delivery::Json },
+        if sse {
+            Delivery::Sse
+        } else {
+            Delivery::JsonRaw
+        },
         finish,
     )
     .await
@@ -542,7 +546,7 @@ async fn transcribe(
         if stream {
             Delivery::Sse
         } else {
-            Delivery::Json
+            Delivery::JsonRaw
         },
         finish,
     )

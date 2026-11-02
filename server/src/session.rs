@@ -565,9 +565,18 @@ fn tasks() -> &'static Mutex<HashMap<String, TaskInfo>> {
 /// `files`: whether the answer is files (a picture) or text (a transcript).
 pub fn mark_task(conversation_id: &str, api: &str, files: bool, spec: Value) {
     let mut g = tasks().lock().unwrap();
-    // Bounded: a task is answered once and never looked up again.
-    if g.len() > 10_000 {
-        g.clear();
+    // Bounded: a task is answered once and never looked up again. Evict one
+    // entry rather than wiping the map: clearing it dropped the specs of
+    // every other pending task, whose replies then failed validation.
+    let max: usize = std::env::var("OMNI2API_SESSION_MAX_TASKS")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(10_000);
+    while g.len() > max {
+        let Some(k) = g.keys().next().cloned() else {
+            break;
+        };
+        g.remove(&k);
     }
     g.insert(
         conversation_id.to_string(),
@@ -672,6 +681,27 @@ mod tests {
             strip_injections_part("<user_info>\nOS: linux\n</user_info>"),
             ""
         );
+    }
+
+    #[test]
+    fn task_marks_evict_one_not_all() {
+        std::env::set_var("OMNI2API_SESSION_MAX_TASKS", "3");
+        for i in 0..6 {
+            mark_task(
+                &format!("conv_evict_{i}"),
+                "images",
+                true,
+                serde_json::Value::Null,
+            );
+        }
+        let g = tasks().lock().unwrap();
+        assert!(g.len() <= 4, "bounded, {} left", g.len());
+        assert!(
+            (4..6).any(|i| g.contains_key(&format!("conv_evict_{i}"))),
+            "recent specs survive"
+        );
+        drop(g);
+        std::env::remove_var("OMNI2API_SESSION_MAX_TASKS");
     }
 
     #[test]

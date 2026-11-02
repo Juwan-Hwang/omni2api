@@ -29,8 +29,22 @@ pub struct StoredFile {
 /// Only these are served without a key, at their unguessable id.
 pub const OUTPUT_PURPOSE: &str = "output";
 
-/// Most bytes kept at once; the oldest files go first beyond it.
-const KEEP_BYTES: usize = 512 * 1024 * 1024;
+/// Most bytes kept per owner; that owner's oldest files go first beyond it.
+/// `OMNI2API_FILES_MAX_BYTES_PER_OWNER` overrides.
+fn keep_bytes_per_owner() -> usize {
+    std::env::var("OMNI2API_FILES_MAX_BYTES_PER_OWNER")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(512 * 1024 * 1024)
+}
+
+/// Backstop across all owners. `OMNI2API_FILES_MAX_BYTES_TOTAL` overrides.
+fn keep_bytes_total() -> usize {
+    std::env::var("OMNI2API_FILES_MAX_BYTES_TOTAL")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(4 * 512 * 1024 * 1024)
+}
 
 /// Files by id, plus ids oldest first.
 type Store = (HashMap<String, StoredFile>, Vec<String>);
@@ -45,11 +59,34 @@ pub fn put(f: StoredFile) -> String {
     let mut g = store().lock().unwrap();
     g.0.insert(id.clone(), f);
     g.1.push(id.clone());
-    let mut total: usize = g.0.values().map(|f| f.bytes.len()).sum();
-    while total > KEEP_BYTES && g.1.len() > 1 {
+    // The owner's own oldest files go first; other owners are untouched.
+    let owner = g.0.get(&id).map(|x| x.owner.clone()).unwrap_or_default();
+    let mut mine: usize =
+        g.0.values()
+            .filter(|x| x.owner == owner)
+            .map(|x| x.bytes.len())
+            .sum();
+    while mine > keep_bytes_per_owner() {
+        let Some(pos) =
+            g.1.iter()
+                .position(|i| g.0.get(i.as_str()).is_some_and(|x| x.owner == owner))
+        else {
+            break;
+        };
+        if g.1[pos] == id {
+            break; // the owner's only file is the one just stored; keep it
+        }
+        let old = g.1.remove(pos);
+        if let Some(x) = g.0.remove(&old) {
+            mine -= x.bytes.len();
+        }
+    }
+    // Global backstop: total across owners.
+    let mut total: usize = g.0.values().map(|x| x.bytes.len()).sum();
+    while total > keep_bytes_total() && g.1.len() > 1 {
         let old = g.1.remove(0);
-        if let Some(f) = g.0.remove(&old) {
-            total -= f.bytes.len();
+        if let Some(x) = g.0.remove(&old) {
+            total -= x.bytes.len();
         }
     }
     id
@@ -68,12 +105,15 @@ pub fn data_url(id: &str) -> Option<String> {
 }
 
 /// A stored file, whoever owns it (ids are unguessable).
-/// When a seat answered an API task with exactly these bytes for this
-/// owner: (what made it, when).
-pub fn made_by_seat(owner: &str, bytes: &[u8]) -> Option<(String, i64)> {
+/// When exactly these bytes were produced by the seat through this server:
+/// (what made it, when). `purpose == output` is the trust signal: only
+/// server-side `put` callers may set it (callers cannot upload with it), so
+/// every output file in the store came back from the seat, whichever key —
+/// the seat's or the caller's — it was stored under.
+pub fn made_by_seat(bytes: &[u8]) -> Option<(String, i64)> {
     let g = store().lock().unwrap();
     g.0.values()
-        .find(|f| f.owner == owner && f.purpose == OUTPUT_PURPOSE && f.bytes == bytes)
+        .find(|f| f.purpose == OUTPUT_PURPOSE && f.bytes == bytes)
         .map(|f| ("omni2api-seat".to_string(), f.created_at))
 }
 

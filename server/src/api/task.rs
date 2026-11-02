@@ -78,6 +78,14 @@ pub enum Delivery {
     /// once it is not, whitespace keeps the connection alive (a JSON parser
     /// skips it) and the status is 200 whatever follows.
     Json,
+    /// One body that may be raw media (audio bytes, a plain-text
+    /// transcript). Padding would commit JSON headers and a 200 status
+    /// before the answer is known, corrupting the download, so these
+    /// responses never pad: the request stays open (the inner task has its
+    /// own timeout) and the answer always arrives with its real status and
+    /// content type. Callers wanting liveness for long waits should use the
+    /// endpoint's streaming mode instead.
+    JsonRaw,
     /// Server-sent events from the start; `:` comments keep it alive.
     Sse,
 }
@@ -172,6 +180,10 @@ pub async fn run(
     });
 
     match delivery {
+        Delivery::JsonRaw => {
+            let a = rx.await.unwrap_or_else(|_| Err("no answer".into()));
+            finished_response(finish(a))
+        }
         Delivery::Json => {
             let mut rx = rx;
             match tokio::time::timeout(hold(), &mut rx).await {

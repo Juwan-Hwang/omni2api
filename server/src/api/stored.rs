@@ -33,6 +33,24 @@ pub struct Stored {
 
 type Map = (HashMap<String, Stored>, Vec<String>);
 
+/// Per-owner object quota: one caller's burst evicts its own oldest objects,
+/// never another owner's. `OMNI2API_STORE_MAX_PER_OWNER` overrides.
+fn max_per_owner() -> usize {
+    std::env::var("OMNI2API_STORE_MAX_PER_OWNER")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(KEEP)
+}
+
+/// Backstop across all owners, for many-owner deployments.
+/// `OMNI2API_STORE_MAX_TOTAL` overrides.
+fn max_total() -> usize {
+    std::env::var("OMNI2API_STORE_MAX_TOTAL")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(10 * KEEP)
+}
+
 fn store() -> &'static Mutex<Map> {
     static S: OnceLock<Mutex<Map>> = OnceLock::new();
     S.get_or_init(|| Mutex::new((HashMap::new(), Vec::new())))
@@ -57,6 +75,7 @@ pub fn put(id: &str, s: Stored) {
         g.0.get(id)
             .and_then(|old| crate::api::webhooks::transition(&old.obj, &s.obj))
             .map(|k| (s.owner.clone(), k));
+    let owner = s.owner.clone();
     if g.0.insert(id.to_string(), s).is_none() {
         g.1.push(id.to_string());
     }
@@ -65,7 +84,24 @@ pub fn put(id: &str, s: Stored) {
         crate::api::webhooks::fire(&owner, kind, id);
         return;
     }
-    while g.1.len() > KEEP {
+    // The owner's own oldest objects go first; other owners are untouched.
+    let mut mine =
+        g.1.iter()
+            .filter(|i| g.0.get(i.as_str()).is_some_and(|s| s.owner == owner))
+            .count();
+    while mine > max_per_owner() {
+        let Some(pos) =
+            g.1.iter()
+                .position(|i| g.0.get(i.as_str()).is_some_and(|s| s.owner == owner))
+        else {
+            break;
+        };
+        let old = g.1.remove(pos);
+        g.0.remove(&old);
+        mine -= 1;
+    }
+    // Global backstop: total across owners.
+    while g.1.len() > max_total() {
         let old = g.1.remove(0);
         g.0.remove(&old);
     }

@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 
 const KEY_A: &str = "ohk_demo_alice_codex"; // seeded caller+responder
 const KEY_B: &str = "ohk_audit_bob";
+const KEY_SEAT: &str = "ohk_audit_seat";
 
 async fn app_two_owners() -> (axum::Router, String) {
     let store = MemoryStore::seeded();
@@ -45,6 +46,26 @@ async fn app_two_owners() -> (axum::Router, String) {
             "key_audit_bob",
             KEY_B,
             "agt_audit_bob",
+            "hum_audit_bob",
+        ))
+        .await;
+    store
+        .insert_agent(AgentIdentity {
+            id: "agt_audit_seat".into(),
+            name: "Bob Seat".into(),
+            client_type: ClientType::Codex,
+            api_key_id: "key_audit_seat".into(),
+            capabilities: vec![],
+            metadata: Default::default(),
+            created_at: now,
+            updated_at: now,
+        })
+        .await;
+    store
+        .insert_api_key(ApiKey::new(
+            "key_audit_seat",
+            KEY_SEAT,
+            "agt_audit_seat",
             "hum_audit_bob",
         ))
         .await;
@@ -124,13 +145,32 @@ fn all_convs(v: &Value, out: &mut Vec<String>) {
     }
 }
 
-async fn seat_next_conv(addr: &str, exclude: &[String]) -> String {
+/// Newest inbox cursor for this key, so polls see only what arrives next.
+async fn seat_cursor(addr: &str, key: &str) -> String {
+    let (s, v) = get(addr, Some(key), "/v1/seat/inbox?wait=0").await;
+    assert_eq!(s, 200, "seat inbox: {v}");
+    v.get("cursor")
+        .or_else(|| v.get("latest"))
+        .and_then(|c| {
+            c.as_str()
+                .map(String::from)
+                .or_else(|| c.as_u64().map(|n| n.to_string()))
+        })
+        .unwrap_or_else(|| "0".to_string())
+}
+
+async fn seat_next_conv(addr: &str, key: &str, after: &str) -> String {
     for _ in 0..40 {
-        let (s, v) = get(addr, Some(KEY_A), "/v1/seat/inbox?wait=1").await;
+        let (s, v) = get(
+            addr,
+            Some(key),
+            &format!("/v1/seat/inbox?wait=1&after={after}"),
+        )
+        .await;
         assert_eq!(s, 200, "seat inbox: {v}");
         let mut convs = Vec::new();
         all_convs(&v, &mut convs);
-        if let Some(c) = convs.into_iter().find(|c| !exclude.contains(c)) {
+        if let Some(c) = convs.into_iter().next() {
             return c;
         }
     }
@@ -206,6 +246,7 @@ async fn repro_delete_response_aborts_cross_owner() {
     let (_r, addr) = app_two_owners().await;
 
     // Control: background response answered normally -> abandoned == false.
+    let cur = seat_cursor(&addr, KEY_A).await;
     let (s, v) = post(
         &addr,
         KEY_A,
@@ -215,7 +256,7 @@ async fn repro_delete_response_aborts_cross_owner() {
     .await;
     assert_eq!(s, 200, "{v}");
     let control_id = v["id"].as_str().unwrap().to_string();
-    let conv = seat_next_conv(&addr, &[]).await;
+    let conv = seat_next_conv(&addr, KEY_A, &cur).await;
     let (s, r) = post(
         &addr,
         KEY_A,
@@ -228,6 +269,7 @@ async fn repro_delete_response_aborts_cross_owner() {
     assert_eq!(s, 200);
 
     // Attack: A starts a background response, B deletes by id, seat answer is abandoned.
+    let cur = seat_cursor(&addr, KEY_A).await;
     let (s, v) = post(
         &addr,
         KEY_A,
@@ -237,7 +279,7 @@ async fn repro_delete_response_aborts_cross_owner() {
     .await;
     assert_eq!(s, 200, "{v}");
     let resp_id = v["id"].as_str().unwrap().to_string();
-    let conv2 = seat_next_conv(&addr, &[conv.clone()]).await;
+    let conv2 = seat_next_conv(&addr, KEY_A, &cur).await;
 
     let (s, v) = delete(&addr, KEY_B, &format!("/v1/responses/{resp_id}")).await;
     assert_eq!(s, 404, "B gets 404: {v}");
@@ -402,4 +444,84 @@ fn webhook_url_policy() {
     ] {
         assert!(valid_url(good), "should accept {good}");
     }
+}
+
+// ── 6. provenance: seat-made output is trusted whatever key stored it ──
+#[tokio::test]
+async fn provenance_trusts_seat_output_across_keys() {
+    let (_r, addr) = app_two_owners().await;
+    let client = client();
+
+    // B asks for an image; the seat (key A, a different agent) answers with one.
+    let cur = seat_cursor(&addr, KEY_SEAT).await;
+    let a2 = addr.clone();
+    let c2 = client.clone();
+    let req = tokio::spawn(async move {
+        c2.post(format!("http://{a2}/v1/images/generations"))
+            .header("Authorization", format!("Bearer {KEY_B}"))
+            .json(&json!({"model": "gpt-image-1", "prompt": "a dot"}))
+            .send()
+            .await
+            .unwrap()
+    });
+    let conv = seat_next_conv(&addr, KEY_SEAT, &cur).await;
+    let png: &[u8] = b"\x89PNG\r\n\x1a\nfake";
+    let (s, r) = post(
+        &addr,
+        KEY_SEAT,
+        "/v1/seat/reply",
+        json!({"conversation_id": conv, "text": "", "end_turn": true,
+               "client_msg_id": format!("ohs_prov{}", uuid::Uuid::new_v4().simple()),
+               "attachments": [{"name": "dot.png", "data": "iVBORw0KGgpmYWtl"}]}),
+    )
+    .await;
+    assert_eq!(s, 200, "{r}");
+    let resp = req.await.unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+
+    // B checks the provenance of exactly those bytes: made by this server's
+    // seat even though B's agent never touched them.
+    let boundary = "provboundary";
+    let mut body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"dot.png\"\r\nContent-Type: image/png\r\n\r\n"
+    ).into_bytes();
+    body.extend_from_slice(png);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    let r = client
+        .post(format!("http://{addr}/v1/content_provenance_checks"))
+        .header("Authorization", format!("Bearer {KEY_B}"))
+        .header(
+            "Content-Type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    let v: Value = r.json().await.unwrap();
+    assert_eq!(v["results"][0]["validation_state"], json!("trusted"), "{v}");
+
+    // Bytes that merely contain c2pa markers are reported, never "valid".
+    let mut body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"x.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n"
+    ).into_bytes();
+    body.extend_from_slice(b"....jumb....c2pa....");
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    let r = client
+        .post(format!("http://{addr}/v1/content_provenance_checks"))
+        .header("Authorization", format!("Bearer {KEY_B}"))
+        .header(
+            "Content-Type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    let v: Value = r.json().await.unwrap();
+    assert_eq!(
+        v["results"][0]["validation_state"],
+        json!("unverified"),
+        "{v}"
+    );
 }

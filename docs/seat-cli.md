@@ -82,7 +82,9 @@ oh-seat reply 'Done.' --next          # answer, then wait for the next message
   at reply time with the reason, so fix and reply again. Moderations: the
   inputs arrive as `inputs.json` (pictures attached); answer per input with
   the categories it violates (`[[], ["violence"]]`) or scores. With no chat
-  active, a bare `reply` answers the newest waiting task. Requests answered within
+  active, a bare `reply` answers the newest waiting task. Vector store
+  search: the store's files are attached; answer with ranked passages
+  (`[{"file": "a.txt", "score": 0.9, "text": "..."}]`). Requests answered within
   85 s keep their real HTTP status; later ones arrive as 200 with the body.
 - **Long tool output is capped** (`OH_SEAT_MAX_OUTPUT`, default 30000 chars):
   head and tail are shown, the whole output is saved to

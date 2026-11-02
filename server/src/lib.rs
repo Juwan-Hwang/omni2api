@@ -177,6 +177,50 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/v1/embeddings",
             post(api::embeddings::embeddings).layer(axum::extract::DefaultBodyLimit::disable()),
         )
+        .route(
+            "/v1/vector_stores",
+            post(api::vector_stores::create).get(api::vector_stores::list),
+        )
+        .route(
+            "/v1/vector_stores/:id",
+            get(api::vector_stores::retrieve)
+                .post(api::vector_stores::modify)
+                .delete(api::vector_stores::delete),
+        )
+        .route(
+            "/v1/vector_stores/:id/search",
+            post(api::vector_stores::search),
+        )
+        .route(
+            "/v1/vector_stores/:id/files",
+            post(api::vector_stores::add_file).get(api::vector_stores::list_files),
+        )
+        .route(
+            "/v1/vector_stores/:id/files/:file_id",
+            get(api::vector_stores::get_file)
+                .post(api::vector_stores::update_file)
+                .delete(api::vector_stores::delete_file),
+        )
+        .route(
+            "/v1/vector_stores/:id/files/:file_id/content",
+            get(api::vector_stores::file_content),
+        )
+        .route(
+            "/v1/vector_stores/:id/file_batches",
+            post(api::vector_stores::create_batch),
+        )
+        .route(
+            "/v1/vector_stores/:id/file_batches/:batch_id",
+            get(api::vector_stores::get_batch_route),
+        )
+        .route(
+            "/v1/vector_stores/:id/file_batches/:batch_id/cancel",
+            post(api::vector_stores::cancel_batch),
+        )
+        .route(
+            "/v1/vector_stores/:id/file_batches/:batch_id/files",
+            get(api::vector_stores::batch_files),
+        )
         .route("/v1/uploads", post(api::uploads::create))
         .route(
             "/v1/uploads/:id/parts",

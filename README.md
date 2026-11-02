@@ -96,7 +96,9 @@ What the server does for whoever sits in the seat:
   on Responses) shares `/v1/conversations` with this server's own history
   (`cnv_` ids, responder key). `/v1/uploads` (parts into a file) and
   `/v1/batches` (each JSONL line runs through the endpoint it names, four
-  at a time; output and error files, cancel). In memory, per key.
+  at a time; output and error files, cancel). `/v1/vector_stores` with
+  files, file batches and content; search is a seat task (the store's files
+  attached, ranked passages back, checked). In memory, per key.
 
 ## Quick start
 

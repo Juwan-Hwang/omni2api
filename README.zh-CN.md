@@ -57,7 +57,7 @@ omni2api 服务器（Rust + Axum）
 - **多路调用互不干扰。** 每个会话相互隔离；并行工具调用、辅助请求（生成标题、建议等）、多轮续接都支持。
 - **图片**（来自调用方和工具结果的）会保存在本地，供席位查看。
 - **不止聊天。** 其他 OpenAI 端点以一次性任务的形式交给席位，附一行要求（`API images.generations: 1 png image(s), size 1024x1024 ...`）；席位用文件作答（`oh-seat reply -a out.png`），或文字作答，调用方拿到标准响应：`/v1/images/generations`、`/edits`、`/variations`（`b64_json`、`url`、`n`、流式）；`/v1/audio/speech`（原始音频或 SSE）、`/transcriptions`、`/translations`（json、text、srt、vtt、verbose_json、diarized_json、流式）；`/v1/embeddings`（席位给出向量，送达前校验；支持 `dimensions`、float 或 base64）；`/v1/moderations`（文本和图片输入，席位给出违规类别）；旧版 `/v1/completions`（suffix 填空、`n`、`echo`、`stop`、流式）。
-- **对象存储。** Responses 默认保存（`store`）：支持 `previous_response_id`、`background`（轮询与取消）、查询、删除、`input_items`、`input_tokens`。`store: true` 的 Chat Completions 可列出、查询、改 metadata、删除、读消息。Conversations API（`conv_` id、items、Responses 的 `conversation` 参数）与本服务自己的历史接口（`cnv_` id，席位密钥）共用 `/v1/conversations`。`/v1/uploads`（分片合成文件）与 `/v1/batches`（JSONL 每行走对应端点，并发 4，产出输出与错误文件，可取消）。保存在内存，按密钥隔离。
+- **对象存储。** Responses 默认保存（`store`）：支持 `previous_response_id`、`background`（轮询与取消）、查询、删除、`input_items`、`input_tokens`。`store: true` 的 Chat Completions 可列出、查询、改 metadata、删除、读消息。Conversations API（`conv_` id、items、Responses 的 `conversation` 参数）与本服务自己的历史接口（`cnv_` id，席位密钥）共用 `/v1/conversations`。`/v1/uploads`（分片合成文件）与 `/v1/batches`（JSONL 每行走对应端点，并发 4，产出输出与错误文件，可取消）。`/v1/vector_stores`（文件、批量文件、内容）；搜索交给席位（附上库内文件，返回排序后的段落并校验）。保存在内存，按密钥隔离。
 
 ## 快速开始
 

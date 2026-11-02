@@ -792,7 +792,7 @@ pub(crate) fn responses_to_chat(body: &Value) -> Value {
     if let Some(n) = body.get("max_output_tokens") {
         out["max_tokens"] = n.clone();
     }
-    for k in ["user", "metadata"] {
+    for k in ["user", "metadata", "conversation"] {
         if let Some(v) = body.get(k) {
             out[k] = v.clone();
         }
@@ -821,12 +821,16 @@ struct ResponsesBuilder {
     calls: Vec<(usize, String, String, String, String)>, // (output_index, item_id, call_id, name, args)
     output: Vec<Value>,
     usage: Value,
+    /// Request fields every response object echoes (instructions,
+    /// metadata, previous_response_id, store, tools...).
+    echo: Value,
 }
 
 impl ResponsesBuilder {
     fn new(model: String, custom: Vec<String>, namespaced: Vec<(String, String, String)>) -> Self {
         Self {
             response_id: format!("resp_{}", Uuid::now_v7().simple()),
+            echo: Value::Null,
             model,
             created: chrono::Utc::now().timestamp(),
             custom,
@@ -856,7 +860,7 @@ impl ResponsesBuilder {
     }
 
     fn response_obj(&self, status: &str) -> Value {
-        json!({
+        let mut o = json!({
             "id": self.response_id,
             "object": "response",
             "created_at": self.created,
@@ -864,7 +868,32 @@ impl ResponsesBuilder {
             "model": self.model,
             "output": self.output,
             "usage": self.usage,
-        })
+        });
+        if let Some(m) = self.echo.as_object() {
+            for (k, v) in m {
+                o[k] = v.clone();
+            }
+        }
+        if status == "completed" {
+            o["completed_at"] = json!(chrono::Utc::now().timestamp());
+            o["error"] = Value::Null;
+            o["incomplete_details"] = Value::Null;
+            // SDK helper: the response's text in one string.
+            let text: String = self
+                .output
+                .iter()
+                .filter(|i| i.get("type").and_then(|t| t.as_str()) == Some("message"))
+                .flat_map(|i| {
+                    i.get("content")
+                        .and_then(|c| c.as_array())
+                        .cloned()
+                        .unwrap_or_default()
+                })
+                .filter_map(|c| c.get("text").and_then(|t| t.as_str()).map(String::from))
+                .collect();
+            o["output_text"] = json!(text);
+        }
+        o
     }
 
     fn start(&mut self) -> Vec<Bytes> {
@@ -1052,12 +1081,208 @@ impl ResponsesBuilder {
     }
 }
 
+/// The request fields a Responses object echoes back.
+fn responses_echo(body: &Value, store: bool, background: bool) -> Value {
+    let g = |k: &str, d: Value| body.get(k).cloned().unwrap_or(d);
+    json!({
+        "instructions": g("instructions", Value::Null),
+        "metadata": g("metadata", json!({})),
+        "previous_response_id": g("previous_response_id", Value::Null),
+        "conversation": g("conversation", Value::Null),
+        "store": store,
+        "background": background,
+        "temperature": g("temperature", json!(1.0)),
+        "top_p": g("top_p", json!(1.0)),
+        "max_output_tokens": g("max_output_tokens", Value::Null),
+        "tools": g("tools", json!([])),
+        "tool_choice": g("tool_choice", json!("auto")),
+        "parallel_tool_calls": g("parallel_tool_calls", json!(true)),
+        "text": g("text", json!({"format": {"type": "text"}})),
+        "reasoning": g("reasoning", json!({"effort": null, "summary": null})),
+        "truncation": g("truncation", json!("disabled")),
+        "user": g("user", Value::Null),
+    })
+}
+
+/// A finished turn: kept when stored, added to its conversation.
+fn record(
+    owner: &str,
+    obj: &Value,
+    input: &[Value],
+    history: &[Value],
+    store: bool,
+    conversation: Option<&str>,
+) {
+    if let Some(cid) = conversation {
+        let mut turn = input.to_vec();
+        turn.extend(
+            obj.get("output")
+                .and_then(|o| o.as_array())
+                .cloned()
+                .unwrap_or_default(),
+        );
+        crate::api::conversations::append(cid, &turn);
+    }
+    if store {
+        save_response(owner, obj, input, history);
+    }
+}
+
+/// Keep a finished response (and what a follow-up continues from).
+fn save_response(owner: &str, obj: &Value, input: &[Value], history: &[Value]) {
+    let id = obj
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let output = obj
+        .get("output")
+        .and_then(|o| o.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut h = history.to_vec();
+    h.extend(input.iter().cloned());
+    h.extend(output);
+    crate::api::stored::put(
+        &id,
+        crate::api::stored::Stored {
+            owner: owner.to_string(),
+            obj: obj.clone(),
+            input: input.to_vec(),
+            history: h,
+        },
+    );
+}
+
+/// A chat completion's message into a Responses builder.
+fn fill_from_chat(b: &mut ResponsesBuilder, v: &Value) {
+    let msg = v
+        .pointer("/choices/0/message")
+        .cloned()
+        .unwrap_or(Value::Null);
+    if let Some(r) = msg.get("reasoning_content").and_then(|v| v.as_str()) {
+        b.reasoning(r);
+    }
+    if let Some(t) = msg.get("content").and_then(|v| v.as_str()) {
+        if !t.is_empty() {
+            b.text(t);
+        }
+    }
+    if let Some(calls) = msg.get("tool_calls").and_then(|v| v.as_array()) {
+        for c in calls {
+            let id = c.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            let name = c
+                .pointer("/function/name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let args = c
+                .pointer("/function/arguments")
+                .and_then(|v| v.as_str())
+                .unwrap_or("{}");
+            b.call(id, name, args);
+        }
+    }
+    if let Some(u) = v.get("usage") {
+        b.set_usage(u);
+    }
+    b.finish();
+}
+
+/// Run one non-streaming Responses turn through the chat pipeline.
+#[allow(clippy::too_many_arguments)]
+async fn responses_nonstream(
+    app: AppState,
+    principal: AuthPrincipal,
+    headers: HeaderMap,
+    chat: crate::openai_compat::ChatCompletionRequest,
+    model: String,
+    custom: Vec<String>,
+    namespaced: Vec<(String, String, String)>,
+    response_id: String,
+    echo: Value,
+) -> Result<Value, (StatusCode, String)> {
+    let resp = chat_completions(State(app), principal, headers, Json(chat)).await;
+    let status = resp.status();
+    if !status.is_success() {
+        let msg = body_json(resp)
+            .await
+            .and_then(|v| {
+                v.pointer("/error/message")
+                    .and_then(|m| m.as_str())
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_else(|| "request failed".to_string());
+        return Err((status, msg));
+    }
+    let Some(v) = body_json(resp).await else {
+        return Err((StatusCode::BAD_GATEWAY, "unreadable completion".into()));
+    };
+    let mut b = ResponsesBuilder::new(model, custom, namespaced);
+    b.response_id = response_id;
+    b.echo = echo;
+    fill_from_chat(&mut b, &v);
+    Ok(b.response_obj("completed"))
+}
+
 pub async fn responses(
     State(app): State<AppState>,
     principal: AuthPrincipal,
     headers: HeaderMap,
-    Json(body): Json<Value>,
+    Json(mut body): Json<Value>,
 ) -> Response {
+    let owner = principal.agent.id.clone();
+    let store = body.get("store").and_then(|v| v.as_bool()).unwrap_or(true);
+    let background = body
+        .get("background")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let own_input =
+        crate::api::stored::with_ids(crate::api::stored::input_items(body.get("input")), "msg");
+    // A follow-up by id: the earlier turns come from the stored response.
+    let mut history = Vec::new();
+    if let Some(prev) = body.get("previous_response_id").and_then(|v| v.as_str()) {
+        match crate::api::stored::get(&owner, prev) {
+            Some(s) => history = s.history,
+            None => {
+                return responses_error(
+                    StatusCode::NOT_FOUND,
+                    &format!("Previous response with id '{prev}' not found."),
+                )
+            }
+        }
+        let mut all = history.clone();
+        all.extend(own_input.clone());
+        body["input"] = Value::Array(all);
+    }
+    // A conversation: its items are the history, and this turn is added.
+    let conversation = match body.get("conversation") {
+        Some(Value::String(s)) => Some(s.clone()),
+        Some(Value::Object(o)) => o.get("id").and_then(|v| v.as_str()).map(String::from),
+        _ => None,
+    };
+    if let Some(cid) = &conversation {
+        if body
+            .get("previous_response_id")
+            .is_some_and(|v| !v.is_null())
+        {
+            return responses_error(
+                StatusCode::BAD_REQUEST,
+                "previous_response_id and conversation cannot both be set",
+            );
+        }
+        let Some(items) = crate::api::conversations::items(&owner, cid) else {
+            return responses_error(
+                StatusCode::NOT_FOUND,
+                &format!("Conversation with id '{cid}' not found."),
+            );
+        };
+        history = items;
+        let mut all = history.clone();
+        all.extend(own_input.clone());
+        body["input"] = Value::Array(all);
+        body["conversation"] = json!({"id": cid});
+    }
+    let echo = responses_echo(&body, store, background);
     let model = body
         .get("model")
         .and_then(|v| v.as_str())
@@ -1078,6 +1303,85 @@ pub async fn responses(
         Ok(c) => c,
         Err(r) => return r,
     };
+    let response_id = format!("resp_{}", Uuid::now_v7().simple());
+
+    // Background: answer at once with a queued response; the turn runs on
+    // and the stored response becomes completed (poll GET, or cancel).
+    if background && !stream {
+        let mut b0 = ResponsesBuilder::new(model.clone(), custom.clone(), namespaced.clone());
+        b0.response_id = response_id.clone();
+        b0.echo = echo.clone();
+        let queued = b0.response_obj("queued");
+        save_response(&owner, &queued, &own_input, &history);
+        let rid = response_id.clone();
+        let task = tokio::spawn(async move {
+            let out = responses_nonstream(
+                app,
+                principal,
+                headers,
+                chat,
+                model,
+                custom,
+                namespaced,
+                rid.clone(),
+                echo,
+            )
+            .await;
+            let obj = match out {
+                Ok(o) => o,
+                Err((_, msg)) => {
+                    let mut o = queued.clone();
+                    o["status"] = json!("failed");
+                    o["error"] = json!({"code": "server_error", "message": msg});
+                    o
+                }
+            };
+            // A background response is always kept: it is how its caller
+            // collects it.
+            record(
+                &owner,
+                &obj,
+                &own_input,
+                &history,
+                true,
+                conversation.as_deref(),
+            );
+            crate::api::stored::done_running(&rid);
+        });
+        crate::api::stored::set_running(&response_id, task.abort_handle());
+        let mut q = b0.response_obj("queued");
+        q["status"] = json!("queued");
+        return Json(q).into_response();
+    }
+
+    if !stream {
+        return match responses_nonstream(
+            app,
+            principal,
+            headers,
+            chat,
+            model,
+            custom,
+            namespaced,
+            response_id,
+            echo,
+        )
+        .await
+        {
+            Ok(obj) => {
+                record(
+                    &owner,
+                    &obj,
+                    &own_input,
+                    &history,
+                    store,
+                    conversation.as_deref(),
+                );
+                Json(obj).into_response()
+            }
+            Err((status, msg)) => responses_error(status, &msg),
+        };
+    }
 
     let resp = chat_completions(State(app), principal, headers, Json(chat)).await;
     let status = resp.status();
@@ -1092,48 +1396,31 @@ pub async fn responses(
             .unwrap_or_else(|| "request failed".to_string());
         return responses_error(status, &msg);
     }
-
-    if !stream || !is_sse(&resp) {
+    if !is_sse(&resp) {
         let Some(v) = body_json(resp).await else {
             return responses_error(StatusCode::BAD_GATEWAY, "unreadable completion");
         };
         let mut b = ResponsesBuilder::new(model, custom, namespaced);
-        let msg = v
-            .pointer("/choices/0/message")
-            .cloned()
-            .unwrap_or(Value::Null);
-        if let Some(r) = msg.get("reasoning_content").and_then(|v| v.as_str()) {
-            b.reasoning(r);
-        }
-        if let Some(t) = msg.get("content").and_then(|v| v.as_str()) {
-            if !t.is_empty() {
-                b.text(t);
-            }
-        }
-        if let Some(calls) = msg.get("tool_calls").and_then(|v| v.as_array()) {
-            for c in calls {
-                let id = c.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                let name = c
-                    .pointer("/function/name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let args = c
-                    .pointer("/function/arguments")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("{}");
-                b.call(id, name, args);
-            }
-        }
-        if let Some(u) = v.get("usage") {
-            b.set_usage(u);
-        }
-        b.finish();
-        return Json(b.response_obj("completed")).into_response();
+        b.response_id = response_id;
+        b.echo = echo;
+        fill_from_chat(&mut b, &v);
+        let obj = b.response_obj("completed");
+        record(
+            &owner,
+            &obj,
+            &own_input,
+            &history,
+            store,
+            conversation.as_deref(),
+        );
+        return Json(obj).into_response();
     }
 
     let mut upstream = resp.into_body().into_data_stream();
     let out = async_stream::stream! {
         let mut b = ResponsesBuilder::new(model, custom, namespaced);
+        b.response_id = response_id;
+        b.echo = echo;
         let mut lines = SseLines::new();
         for f in b.start() { yield Ok::<Bytes, std::convert::Infallible>(f); }
         'outer: while let Some(chunk) = upstream.next().await {
@@ -1145,6 +1432,7 @@ pub async fn responses(
                     None => yield Ok(Bytes::from_static(b": keepalive\n\n")),
                     Some(data) if data.trim() == "[DONE]" => {
                         for f in b.finish() { yield Ok(f); }
+                        record(&owner, &b.response_obj("completed"), &own_input, &history, store, conversation.as_deref());
                         break 'outer;
                     }
                     Some(data) => {
@@ -1182,6 +1470,38 @@ pub async fn responses(
         .header("X-Accel-Buffering", "no")
         .body(Body::from_stream(out))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+/// `POST /v1/responses/input_tokens`: what a Responses request would cost
+/// in input tokens, counted the way the chat pipeline counts.
+pub async fn responses_input_tokens(
+    principal: AuthPrincipal,
+    headers: HeaderMap,
+    Json(mut body): Json<Value>,
+) -> Response {
+    if let Some(prev) = body.get("previous_response_id").and_then(|v| v.as_str()) {
+        let Some(s) = crate::api::stored::get(&principal.agent.id, prev) else {
+            return responses_error(
+                StatusCode::NOT_FOUND,
+                &format!("Previous response with id '{prev}' not found."),
+            );
+        };
+        let mut all = s.history;
+        all.extend(crate::api::stored::input_items(body.get("input")));
+        body["input"] = Value::Array(all);
+    }
+    let chat = match chat_request(responses_to_chat(&body)) {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    let tokenizer = headers
+        .get("x-omni2api-tokenizer")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(crate::session::default_tokenizer);
+    let n = crate::session::count_request_tokens(&tokenizer, &chat);
+    Json(json!({"object": "response.input_tokens", "input_tokens": n})).into_response()
 }
 
 #[cfg(test)]

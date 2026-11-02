@@ -77,15 +77,52 @@ fn max_concurrency() -> usize {
 ///   4. Handler (chat_completions)
 pub fn build_router(state: AppState) -> Router {
     let protected = Router::new()
-        .route("/v1/chat/completions", post(api::openai::chat_completions))
+        .route(
+            "/v1/chat/completions",
+            post(api::stored::chat_create)
+                .get(api::stored::list_chat)
+                .layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/v1/chat/completions/:id",
+            get(api::stored::get_chat)
+                .post(api::stored::update_chat)
+                .delete(api::stored::delete_chat),
+        )
+        .route(
+            "/v1/chat/completions/:id/messages",
+            get(api::stored::chat_messages),
+        )
         // Same pipeline, other wires: Anthropic Messages (Claude Code) and
         // OpenAI Responses (Codex CLI).
-        .route("/v1/messages", post(api::adapters::messages))
+        .route(
+            "/v1/messages",
+            post(api::adapters::messages).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
         .route(
             "/v1/messages/count_tokens",
             post(api::adapters::count_tokens),
         )
-        .route("/v1/responses", post(api::adapters::responses))
+        .route(
+            "/v1/responses",
+            post(api::adapters::responses).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/v1/responses/input_tokens",
+            post(api::adapters::responses_input_tokens),
+        )
+        .route(
+            "/v1/responses/:id",
+            get(api::stored::get_response).delete(api::stored::delete_response),
+        )
+        .route(
+            "/v1/responses/:id/cancel",
+            post(api::stored::cancel_response),
+        )
+        .route(
+            "/v1/responses/:id/input_items",
+            get(api::stored::response_input_items),
+        )
         .route(
             "/v1/files",
             post(api::files::upload)
@@ -103,14 +140,20 @@ pub fn build_router(state: AppState) -> Router {
         // itself (Copilot's Anthropic provider, several SDKs) lands here.
         .route(
             "/v1/v1/chat/completions",
-            post(api::openai::chat_completions),
+            post(api::stored::chat_create).layer(axum::extract::DefaultBodyLimit::disable()),
         )
-        .route("/v1/v1/messages", post(api::adapters::messages))
+        .route(
+            "/v1/v1/messages",
+            post(api::adapters::messages).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
         .route(
             "/v1/v1/messages/count_tokens",
             post(api::adapters::count_tokens),
         )
-        .route("/v1/v1/responses", post(api::adapters::responses))
+        .route(
+            "/v1/v1/responses",
+            post(api::adapters::responses).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
         .route("/v1/v1/models", get(list_models))
         .route("/v1/v1/models/:model_id", get(get_model))
         .route("/v1/tokenizers", get(list_tokenizers))
@@ -179,7 +222,20 @@ pub fn build_router(state: AppState) -> Router {
         // undelivered messages, so a client that wants the past has to ask
         // for it — replaying everything on every reconnect meant the human
         // watched conversations they had already answered arrive again.
-        .route("/v1/conversations", get(api::history::list_conversations))
+        // Shared with the OpenAI Conversations API: `conv_` ids are
+        // OpenAI's, `cnv_` ours (see `api/conversations.rs`).
+        .route(
+            "/v1/conversations",
+            get(api::conversations::list).post(api::conversations::create),
+        )
+        .route(
+            "/v1/conversations/:conversation_id/items",
+            get(api::conversations::list_items).post(api::conversations::add_items),
+        )
+        .route(
+            "/v1/conversations/:conversation_id/items/:item_id",
+            get(api::conversations::get_item).delete(api::conversations::delete_item),
+        )
         .route(
             "/v1/conversations/:conversation_id/messages",
             get(api::history::list_messages),
@@ -188,7 +244,9 @@ pub fn build_router(state: AppState) -> Router {
         // and only the permanent route actually destroys anything.
         .route(
             "/v1/conversations/:conversation_id",
-            delete(api::history::delete_conversation),
+            delete(api::conversations::delete)
+                .get(api::conversations::retrieve)
+                .post(api::conversations::update),
         )
         // Keep a conversation: messages live in memory unless saved.
         .route(

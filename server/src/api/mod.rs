@@ -7,6 +7,7 @@
 pub mod adapters;
 pub mod audio;
 pub mod completions;
+pub mod conversations;
 pub mod embeddings;
 pub mod files;
 pub mod history;
@@ -15,4 +16,5 @@ pub mod mock;
 pub mod moderations;
 pub mod openai;
 pub mod replies;
+pub mod stored;
 pub mod task;

@@ -79,6 +79,8 @@ pub async fn require_api_key(
         || path.starts_with("/v1/models/")
         || path == "/v1/tokenizers"
         || path == "/v1/responses"
+        || path.starts_with("/v1/responses/")
+        || path.starts_with("/v1/chat/completions/")
         || path.starts_with("/v1/messages")
         || path == "/v1/files"
         || path.starts_with("/v1/files/")
@@ -88,7 +90,12 @@ pub async fn require_api_key(
         || path == "/v1/embeddings"
         || path == "/v1/moderations"
         || path == "/v1/completions";
-    let allowed = if caller_route {
+    // Shared by OpenAI Conversations (caller) and history (responder):
+    // the handlers check which side a request is on.
+    let shared = path == "/v1/conversations" || path.starts_with("/v1/conversations/");
+    let allowed = if shared {
+        principal.api_key.scope.may_call() || principal.api_key.scope.may_respond()
+    } else if caller_route {
         principal.api_key.scope.may_call()
     } else {
         principal.api_key.scope.may_respond()

@@ -88,6 +88,13 @@ What the server does for whoever sits in the seat:
   reach the caller; `dimensions`, float or base64); `/v1/moderations`
   (text and image inputs, the seat names the categories); legacy
   `/v1/completions` (suffix fill-in, `n`, `echo`, `stop`, streaming).
+- **Stored objects.** Responses are kept (`store`, default on):
+  `previous_response_id`, `background` with polling and cancel, retrieve,
+  delete, `input_items`, `input_tokens`. Chat completions with
+  `store: true` can be listed, retrieved, re-tagged, deleted, and their
+  messages read. The Conversations API (`conv_` ids, items, `conversation`
+  on Responses) shares `/v1/conversations` with this server's own history
+  (`cnv_` ids, responder key). In memory, per key.
 
 ## Quick start
 

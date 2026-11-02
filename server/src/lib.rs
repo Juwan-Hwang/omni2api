@@ -238,6 +238,28 @@ pub fn build_router(state: AppState) -> Router {
             post(api::realtime::client_secrets),
         )
         .route("/v1/realtime/sessions", post(api::realtime::client_secrets))
+        .route(
+            "/v1/containers",
+            post(api::containers::create).get(api::containers::list),
+        )
+        .route(
+            "/v1/containers/:id",
+            get(api::containers::retrieve).delete(api::containers::delete),
+        )
+        .route(
+            "/v1/containers/:id/files",
+            post(api::containers::add_file)
+                .get(api::containers::list_files)
+                .layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/v1/containers/:id/files/:file_id",
+            get(api::containers::get_file).delete(api::containers::delete_file),
+        )
+        .route(
+            "/v1/containers/:id/files/:file_id/content",
+            get(api::containers::file_content),
+        )
         .route("/v1/uploads", post(api::uploads::create))
         .route(
             "/v1/uploads/:id/parts",

@@ -8,6 +8,7 @@ pub mod adapters;
 pub mod audio;
 pub mod batches;
 pub mod completions;
+pub mod containers;
 pub mod conversations;
 pub mod embeddings;
 pub mod files;

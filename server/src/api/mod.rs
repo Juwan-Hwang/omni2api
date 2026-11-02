@@ -21,3 +21,4 @@ pub mod stored;
 pub mod task;
 pub mod uploads;
 pub mod vector_stores;
+pub mod videos;

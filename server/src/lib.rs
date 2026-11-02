@@ -221,6 +221,18 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/vector_stores/:id/file_batches/:batch_id/files",
             get(api::vector_stores::batch_files),
         )
+        .route(
+            "/v1/videos",
+            post(api::videos::create)
+                .get(api::videos::list)
+                .layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/v1/videos/:id",
+            get(api::videos::retrieve).delete(api::videos::delete),
+        )
+        .route("/v1/videos/:id/content", get(api::videos::content))
+        .route("/v1/videos/:id/remix", post(api::videos::remix))
         .route("/v1/uploads", post(api::uploads::create))
         .route(
             "/v1/uploads/:id/parts",

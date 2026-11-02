@@ -84,7 +84,8 @@ What the server does for whoever sits in the seat:
   `/v1/images/generations`, `/edits`, `/variations` (`b64_json`, `url`, `n`,
   streaming); `/v1/audio/speech` (raw audio or SSE), `/transcriptions` and
   `/translations` (json, text, srt, vtt, verbose_json, diarized_json,
-  streaming); `/v1/embeddings` (the seat sends vectors, checked before they
+  streaming); `/v1/videos` (queued job, the seat attaches an mp4 and
+  optionally a thumbnail; content, remix, list, delete); `/v1/embeddings` (the seat sends vectors, checked before they
   reach the caller; `dimensions`, float or base64); `/v1/moderations`
   (text and image inputs, the seat names the categories); legacy
   `/v1/completions` (suffix fill-in, `n`, `echo`, `stop`, streaming).

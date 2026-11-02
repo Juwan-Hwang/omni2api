@@ -988,11 +988,12 @@ pub fn fine_tuned_models(owner: &str) -> Vec<Value> {
 
 // ── checkpoint permissions ──
 
-fn perms() -> &'static std::sync::Mutex<std::collections::HashMap<(String, String), Vec<Value>>> {
-    static P: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashMap<(String, String), Vec<Value>>>,
-    > = std::sync::OnceLock::new();
-    P.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+/// Checkpoint permissions by (agent, checkpoint).
+type Perms = std::sync::Mutex<std::collections::HashMap<(String, String), Vec<Value>>>;
+
+fn perms() -> &'static Perms {
+    static P: std::sync::OnceLock<Perms> = std::sync::OnceLock::new();
+    P.get_or_init(Default::default)
 }
 
 fn perm_page(v: Vec<Value>) -> Value {

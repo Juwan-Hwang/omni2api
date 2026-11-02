@@ -7,7 +7,8 @@ CLI stays the primary way; use MCP when it is the easier one for your host.
 
 Tools: `next`, `call_tool`, `result`, `reply`, `caps`, `history`, `convs`,
 `use_conv`, `name`, `status`, `guide`. The loop is `next` → optionally
-`call_tool` → `reply` → `next`.
+`call_tool` → `reply` → `next`. An API task (an image request) is answered
+with `reply` `attach=["/path/out.png"]`.
 
 ## Register it
 

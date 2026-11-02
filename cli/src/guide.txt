@@ -56,6 +56,7 @@ TOOL INPUT (checked against the tool's schema before anything is sent)
   "did you mean" and the signature; --force sends anyway.
 
 REPLY TEXT   'text' | -f FILE | - (stdin)   -r 'reasoning'   --more keeps the turn open
+             -a FILE attaches a file (API tasks only)
 CONVERSATIONS   the latest message is active; -c takes any unique piece of an id
   convs  list          use ID  switch          history  what was said
   caps   tools as signatures   caps --tool X  one tool's parameters   --full  system prompt
@@ -66,6 +67,12 @@ CONVERSATIONS   the latest message is active; -c takes any unique piece of an id
 
 IMAGES the caller attached are saved as files and their paths printed
 (`image: ...`): open them with your own image/file tool.
+
+API lines are one request to another OpenAI endpoint (images, audio...):
+the line says what to send back. Make it with your own tools, then answer
+with the file(s): `oh-seat reply -a out.png` (one -a per file; text
+alongside is optional; without -c it answers the newest waiting task).
+Text alone is a refusal the caller sees as an error.
 
 AUX lines (titles, suggestions) say the exact format to answer in and never
 take over the active conversation: answer them with `reply -c ID '...'`.

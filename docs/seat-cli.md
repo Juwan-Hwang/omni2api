@@ -42,7 +42,7 @@ oh-seat reply 'Done.' --next          # answer, then wait for the next message
 | command | what it does |
 |---|---|
 | `next [--timeout S] [--all]` | Wait for a message (default 100 s, exit 2 if none). First sight of a conversation also prints its tool names. |
-| `reply TEXT \| -f FILE \| -` | Reply in the active (or `-c`) conversation. `--more` keeps the turn open, `-r` adds reasoning, `--next` waits for the next message. |
+| `reply TEXT \| -f FILE \| -` | Reply in the active (or `-c`) conversation. `--more` keeps the turn open, `-r` adds reasoning, `--next` waits for the next message, `-a FILE` attaches a file (API tasks). |
 | `tool NAME key=value…` | Ask the caller to run a tool, wait for its result. Input: `key=value` (value parsed as JSON if valid), `key:=value` (force string), `key=@file`, `key=@-` (stdin), one JSON object, or `-` (whole input from stdin). |
 | `result ID` | Keep waiting for a tool result that outlived `tool --timeout`. |
 | `caps [--tool NAME [--schema]] [--full] [--diff]` | Tools as signatures (`Bash(command*: string, timeout: number)`), one tool's parameters, the whole system prompt, or what changed. |
@@ -70,6 +70,12 @@ oh-seat reply 'Done.' --next          # answer, then wait for the next message
   `AUX: answer with …; reply with -c CONV` and never take over the active
   conversation, so a later bare `reply` lands in the real chat. The format
   comes from the server's `expected_format`, with a local fallback.
+- **API tasks are labelled too.** A request to another OpenAI endpoint
+  (an image) prints `API images.generations: answer with …`. Make the file
+  with your own tools and answer with `reply -a FILE` (repeat `-a` for
+  several; without `-c` it goes to the newest waiting task). Text alone is
+  a refusal: the caller gets an error carrying it. Requests answered within
+  85 s keep their real HTTP status; later ones arrive as 200 with the body.
 - **Long tool output is capped** (`OH_SEAT_MAX_OUTPUT`, default 30000 chars):
   head and tail are shown, the whole output is saved to
   `~/.omni2api/results/<id>.txt` for grep.

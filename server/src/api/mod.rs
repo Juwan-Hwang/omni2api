@@ -7,6 +7,8 @@
 pub mod adapters;
 pub mod files;
 pub mod history;
+pub mod images;
 pub mod mock;
 pub mod openai;
 pub mod replies;
+pub mod task;

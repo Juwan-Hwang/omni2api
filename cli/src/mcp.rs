@@ -66,8 +66,9 @@ fn tools() -> Value {
             "all": {"type": "boolean", "description": "Return on any event, not only messages"}}}},
         {"name": "reply",
          "description": "Answer the caller. Ends the turn unless more=true. Then call `next`.",
-         "inputSchema": {"type": "object", "required": ["text"], "properties": {
+         "inputSchema": {"type": "object", "properties": {
             "text": {"type": "string", "description": "The answer, exactly as the caller should see it"},
+            "attach": {"type": "array", "items": {"type": "string"}, "description": "Files (paths on this machine) answering an API task: the picture an image request asked for. Without conv: the newest waiting task"},
             "conv": conv,
             "reasoning": {"type": "string", "description": "Thinking shown before the answer"},
             "more": {"type": "boolean", "description": "Keep the turn open for another reply"},
@@ -159,9 +160,27 @@ fn to_cli(name: &str, a: &Value) -> Result<(Vec<String>, Option<String>, u64), S
             }
         }
         "reply" => {
-            let text = s(a, "text").ok_or("reply needs text")?;
-            v.extend(["reply".into(), "-".into()]);
-            stdin = Some(text);
+            let files: Vec<String> = a["attach"]
+                .as_array()
+                .map(|l| {
+                    l.iter()
+                        .filter_map(|f| f.as_str().map(String::from))
+                        .collect()
+                })
+                .or_else(|| s(a, "attach").map(|f| vec![f]))
+                .unwrap_or_default();
+            let text = s(a, "text");
+            if text.is_none() && files.is_empty() {
+                return Err("reply needs text (or attach files for an API task)".into());
+            }
+            v.push("reply".into());
+            if let Some(t) = text {
+                v.push("-".into());
+                stdin = Some(t);
+            }
+            for f in files {
+                v.extend(["-a".into(), f]);
+            }
             push_opt(&mut v, "-c", s(a, "conv"));
             push_opt(&mut v, "-r", s(a, "reasoning"));
             if b(a, "more") {
@@ -293,6 +312,7 @@ fn mcpify(t: &str) -> String {
     let t = rewrite_word(&t, "`oh-seat result ", "`result` id={}");
     let t = rewrite_word(&t, "oh-seat result ", "`result` id={}");
     let t = rewrite_word(&t, "oh-seat reply -c ", "`reply` conv={}");
+    let t = rewrite_word(&t, "`oh-seat reply -a ", "`reply` attach=[{}]");
     t.replace("`oh-seat tool", "`call_tool")
         .replace("`oh-seat use", "`use_conv")
         .replace("`oh-seat ", "`")
@@ -546,6 +566,13 @@ mod tests {
     fn maps_calls_to_cli() {
         let (v, stdin, _) = to_cli("reply", &json!({"text": "hi", "more": true})).unwrap();
         assert_eq!(v, ["reply", "-", "--more"]);
+        let (v, _, _) = to_cli("reply", &json!({"attach": ["a.png", "b.png"]})).unwrap();
+        assert_eq!(v, ["reply", "-a", "a.png", "-a", "b.png"]);
+        assert!(to_cli("reply", &json!({})).is_err());
+        assert_eq!(
+            mcpify("attach the file: `oh-seat reply -a out.png`; any text"),
+            "attach the file: `reply` attach=[out.png]; any text"
+        );
         assert_eq!(stdin.as_deref(), Some("hi"));
         let (v, _, w) = to_cli(
             "call_tool",

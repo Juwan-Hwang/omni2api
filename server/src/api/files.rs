@@ -25,6 +25,10 @@ pub struct StoredFile {
     pub created_at: i64,
 }
 
+/// Purpose of a file a seat made to answer an API task (a picture, audio).
+/// Only these are served without a key, at their unguessable id.
+pub const OUTPUT_PURPOSE: &str = "output";
+
 /// Most bytes kept at once; the oldest files go first beyond it.
 const KEEP_BYTES: usize = 512 * 1024 * 1024;
 
@@ -61,6 +65,58 @@ pub fn data_url(id: &str) -> Option<String> {
         Some(&f.filename),
         &crate::openai_compat::b64_encode(&f.bytes),
     ))
+}
+
+/// A stored file, whoever owns it (ids are unguessable).
+pub fn get(id: &str) -> Option<StoredFile> {
+    store().lock().unwrap().0.get(id.trim()).cloned()
+}
+
+/// The mime type of common media from its first bytes.
+pub fn sniff_mime(b: &[u8]) -> Option<&'static str> {
+    let starts = |p: &[u8]| b.starts_with(p);
+    if starts(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if starts(&[0xFF, 0xD8, 0xFF]) {
+        Some("image/jpeg")
+    } else if starts(b"GIF8") {
+        Some("image/gif")
+    } else if starts(b"RIFF") && b.get(8..12) == Some(b"WEBP") {
+        Some("image/webp")
+    } else if starts(b"RIFF") && b.get(8..12) == Some(b"WAVE") {
+        Some("audio/wav")
+    } else if starts(b"ID3") || (b.len() > 1 && b[0] == 0xFF && b[1] & 0xE0 == 0xE0) {
+        Some("audio/mpeg")
+    } else if starts(b"fLaC") {
+        Some("audio/flac")
+    } else if starts(b"OggS") {
+        Some("audio/ogg")
+    } else if b.get(4..8) == Some(b"ftyp") {
+        Some("video/mp4")
+    } else if starts(&[0x1A, 0x45, 0xDF, 0xA3]) {
+        Some("video/webm")
+    } else if starts(b"%PDF") {
+        Some("application/pdf")
+    } else {
+        None
+    }
+}
+
+/// `GET /files/:id`: a seat-made output, without a key, so a URL in an
+/// API answer (`response_format: "url"`) opens in any browser or SDK.
+pub async fn public(Path(id): Path<String>) -> Response {
+    let id = id.split('.').next().unwrap_or("").to_string();
+    match get(&id).filter(|f| f.purpose == OUTPUT_PURPOSE) {
+        Some(f) => (
+            [
+                (header::CONTENT_TYPE, f.mime.clone()),
+                (header::CACHE_CONTROL, "private, max-age=3600".to_string()),
+            ],
+            f.bytes,
+        )
+            .into_response(),
+        None => not_found(&id),
+    }
 }
 
 fn meta(id: &str, f: &StoredFile) -> Value {

@@ -1367,7 +1367,8 @@ pub async fn chat_completions(
         "Extracted agent profile from HTTP request"
     );
 
-    let auxiliary = is_auxiliary_request(&req);
+    let task = task_of(&req);
+    let auxiliary = task.is_some() || is_auxiliary_request(&req);
     let tokenizer = headers
         .get("x-omni2api-tokenizer")
         .and_then(|v| v.to_str().ok())
@@ -1416,6 +1417,11 @@ pub async fn chat_completions(
     let mut info = request_info(&req, &profile, system_prompt.as_deref(), auxiliary);
     info["client"] = Value::String(client_name.clone());
     info["prompt_tokens"] = json!(prompt_tokens);
+    if let Some((api, expected)) = &task {
+        info["kind"] = json!("api");
+        info["api"] = json!(api);
+        info["expected_format"] = json!(expected);
+    }
     for msg in &mut inbound_messages {
         if msg.metadata.contains_key("raw_tail") {
             msg.metadata.insert("request".to_string(), info.clone());
@@ -1428,7 +1434,12 @@ pub async fn chat_completions(
     //    replies we sent earlier identify the conversation: the caller
     //    replays them in its history. Only a request carrying none of our
     //    replies (a fresh session) falls back to the fingerprint key.
-    let session_key = resolve_session_key(&headers, &req, system_prompt.as_deref(), auxiliary);
+    // An API task (an image, a transcript...) is one request, one answer:
+    // a conversation of its own, so two at once never race for a reply.
+    let session_key = match &task {
+        Some((api, _)) => format!("task:{}:{}", api, uuid::Uuid::new_v4().simple()),
+        None => resolve_session_key(&headers, &req, system_prompt.as_deref(), auxiliary),
+    };
     let fallback_key = session_key.starts_with("prm:") || session_key.starts_with("cli:");
     let continued = if fallback_key && !auxiliary {
         let digests = history_digests(&req);
@@ -1537,6 +1548,9 @@ pub async fn chat_completions(
         });
             for msg in &inbound_messages {
                 app.message.insert(msg.clone()).await;
+            }
+            if let Some((api, _)) = &task {
+                crate::session::mark_task(&cnv.id, api);
             }
             cnv.id
         };
@@ -1669,11 +1683,17 @@ pub async fn chat_completions(
     } else if is_async_mode(&headers) {
         handle_async(app, conversation_id, inbound_messages, human_id).await
     } else {
+        let timeout = if task.is_some() {
+            task_timeout_secs()
+        } else {
+            reply_timeout_secs()
+        };
         handle_non_streaming(
             app,
             conversation_id,
             inbound_messages,
             human_id,
+            timeout,
             TurnCtx {
                 agent_id: principal.agent.id.clone(),
                 prompt_tokens,
@@ -1905,6 +1925,34 @@ fn reply_timeout_secs() -> u64 {
         .unwrap_or(300)
 }
 
+/// How long an API task (an image, a transcript...) may take before it is
+/// handed to async mode: making a picture takes longer than a chat answer.
+/// `OMNI2API_TASK_TIMEOUT_SECS`, default 900.
+pub(crate) fn task_timeout_secs() -> u64 {
+    std::env::var("OMNI2API_TASK_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(900)
+}
+
+/// Metadata key marking a chat request as an API task built by one of the
+/// non-chat endpoints (`/v1/images/generations`...): `{"api", "expected"}`.
+pub(crate) const TASK_KEY: &str = "omni2api_task";
+
+/// The API task a request carries: its endpoint name and the answer
+/// contract shown to the seat.
+fn task_of(req: &ChatCompletionRequest) -> Option<(String, String)> {
+    let t = req.metadata.as_ref()?.get(TASK_KEY)?;
+    let api = t.get("api")?.as_str()?.to_string();
+    let expected = t
+        .get("expected")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    Some((api, expected))
+}
+
 /// Whether the caller asked for asynchronous delivery.
 ///
 /// Accepts `x-omni2api-mode: async`, and also honours a global override via
@@ -2104,6 +2152,7 @@ async fn handle_non_streaming(
     conversation_id: String,
     inbound_messages: Vec<Message>,
     human_id: String,
+    timeout_secs: u64,
     turn: TurnCtx,
 ) -> Response {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -2116,7 +2165,7 @@ async fn handle_non_streaming(
     // Configurable via OMNI2API_REPLY_TIMEOUT_SECS. Callers that need to
     // wait longer than any HTTP client tolerates should use async mode
     // (`x-omni2api-mode: async`) rather than raising this.
-    let timeout = Duration::from_secs(reply_timeout_secs());
+    let timeout = Duration::from_secs(timeout_secs);
     let keepalive = Duration::from_secs(nonstreaming_keepalive_secs());
 
     let app_s = app.clone();

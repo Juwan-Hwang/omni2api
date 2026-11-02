@@ -77,6 +77,11 @@ What the server does for whoever sits in the seat:
   `input_file`, Anthropic `document`, a PDF from Claude Code's Read, any
   binary) are saved locally for the seat. Standard `/v1/files` uploads and
   `file_id` references work too.
+- **More than chat.** Other OpenAI endpoints reach the seat as one-off
+  tasks with a one-line contract (`API images.generations: 1 png image(s),
+  size 1024x1024 ...`); the seat answers with files (`oh-seat reply -a
+  out.png`) and the caller gets the standard response: `/v1/images/generations`
+  (`b64_json`, `url`, `n`, streaming).
 
 ## Quick start
 

@@ -112,6 +112,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/v1/models", get(list_models))
         .route("/v1/v1/models/:model_id", get(get_model))
         .route("/v1/tokenizers", get(list_tokenizers))
+        // The other OpenAI endpoints: each request is a task the seat
+        // answers (see `api/task.rs`).
+        .route("/v1/images/generations", post(api::images::generations))
+        .route("/v1/v1/images/generations", post(api::images::generations))
         // Companion to async mode: poll for a human's reply without
         // holding the original request open.
         // axum 0.7 path-parameter syntax is `:name` — `{name}` would be
@@ -172,6 +176,8 @@ pub fn build_router(state: AppState) -> Router {
         // Without it the container is reported unhealthy forever even
         // though the server is serving traffic fine.
         .route("/healthz", get(health))
+        // Seat-made outputs (pictures, audio) handed back as links.
+        .route("/files/:file_id", get(api::files::public))
         .route("/ws", get(ws::ws_handler));
 
     // `/v1/mock/*` impersonates the human — forgeable replies, tool calls,

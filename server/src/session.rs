@@ -546,6 +546,29 @@ pub fn count_request_tokens(
     n
 }
 
+// ── API tasks ──
+
+/// Conversations opened by a non-chat endpoint (an image, a transcript...),
+/// by their endpoint name. Only these take attachments as the answer.
+fn tasks() -> &'static Mutex<HashMap<String, String>> {
+    static T: std::sync::OnceLock<Mutex<HashMap<String, String>>> = std::sync::OnceLock::new();
+    T.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub fn mark_task(conversation_id: &str, api: &str) {
+    let mut g = tasks().lock().unwrap();
+    // Bounded: a task is answered once and never looked up again.
+    if g.len() > 10_000 {
+        g.clear();
+    }
+    g.insert(conversation_id.to_string(), api.to_string());
+}
+
+/// The endpoint a task conversation answers, if it is one.
+pub fn task_api(conversation_id: &str) -> Option<String> {
+    tasks().lock().unwrap().get(conversation_id).cloned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

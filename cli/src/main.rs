@@ -97,6 +97,10 @@ enum Cmd {
         /// Thinking shown before the reply (reasoning_content)
         #[arg(long, short = 'r')]
         reasoning: Option<String>,
+        /// Attach a file as the answer to an API task (an image request's
+        /// picture, a speech request's audio); repeat for several
+        #[arg(long = "attach", short = 'a')]
+        attach: Vec<PathBuf>,
         /// Keep the turn open for another reply
         #[arg(long)]
         more: bool,
@@ -248,6 +252,10 @@ struct ConvInfo {
     /// The latest message was an auxiliary call (title, summary...).
     #[serde(default)]
     aux: bool,
+    /// The latest message was an API task (an image, audio...) still to
+    /// answer with a file.
+    #[serde(default)]
+    api: bool,
 }
 
 fn home() -> PathBuf {
@@ -657,6 +665,7 @@ impl Ctx {
             info.last = s(e, "text").unwrap_or("").chars().take(100).collect();
             info.t = now_secs();
             info.aux = aux_hint(e).is_some();
+            info.api = s(e, "kind") == Some("api");
             // A new message opens a new turn: older calls are settled.
             self.st.pending.retain(|p| p[1] != c);
         }
@@ -872,6 +881,29 @@ fn save_result_images(e: &Value) -> Vec<files::Saved> {
         .collect()
 }
 
+fn b64(bytes: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut o = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for c in bytes.chunks(3) {
+        let n = (c[0] as u32) << 16
+            | (*c.get(1).unwrap_or(&0) as u32) << 8
+            | *c.get(2).unwrap_or(&0) as u32;
+        o.push(T[(n >> 18) as usize & 63] as char);
+        o.push(T[(n >> 12) as usize & 63] as char);
+        o.push(if c.len() > 1 {
+            T[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        o.push(if c.len() > 2 {
+            T[n as usize & 63] as char
+        } else {
+            '='
+        });
+    }
+    o
+}
+
 /// `data:image/png;base64,...` → (mime, bytes).
 fn data_url_bytes(url: &str) -> Option<(String, Vec<u8>)> {
     let rest = url.strip_prefix("data:")?;
@@ -908,7 +940,10 @@ fn print_event(e: &Value) {
     match s(e, "type").unwrap_or("event") {
         "message.received" => {
             let mut h = format!("MESSAGE conv={c} client={}", s(e, "client").unwrap_or("?"));
-            if let Some(a) = aux_hint(e) {
+            if let (Some("api"), Some(a)) = (s(e, "kind"), aux_hint(e)) {
+                let api = s(e, "api").unwrap_or("api");
+                h.push_str(&format!("  API {api}: {a}; reply with -c {c}"));
+            } else if let Some(a) = aux_hint(e) {
                 h.push_str(&format!("  AUX: {a}; reply with -c {c}"));
             }
             println!("{h}");
@@ -1211,16 +1246,35 @@ fn cmd_next(cx: &mut Ctx, timeout: u64, all: bool) -> R<u8> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_reply(
     cx: &mut Ctx,
     text: Option<String>,
     file: Option<PathBuf>,
     conv: Option<String>,
     reasoning: Option<String>,
+    attach: Vec<PathBuf>,
     more: bool,
     force: bool,
 ) -> R<u8> {
-    let c = cx.conv(conv)?;
+    // Files answer an API task, never the chat: without -c they go to the
+    // newest task still waiting for its file.
+    let c = match conv {
+        None if !attach.is_empty() => cx
+            .st
+            .convs
+            .iter()
+            .filter(|(_, i)| i.api)
+            .max_by_key(|(_, i)| i.t)
+            .map(|(k, _)| k.clone())
+            .ok_or_else(|| {
+                Fail(
+                    USAGE,
+                    "no API task waiting for a file (pass -c CONV)".into(),
+                )
+            })?,
+        conv => cx.conv(conv)?,
+    };
     // Ending the turn while a call is out loses the reply: it rides along
     // with the call and the caller, busy running the tool, never shows it.
     if !more && !force && cx.st.pending.iter().any(|p| p[1] == c) {
@@ -1253,6 +1307,8 @@ fn cmd_reply(
         }
     }
     let text = match (file, text) {
+        // Files alone answer an API task; no text needed.
+        (None, None) if !attach.is_empty() => String::new(),
         (Some(f), _) if f.as_os_str() != "-" => {
             std::fs::read_to_string(&f).or_else(|e| usage(format!("{}: {e}", f.display())))?
         }
@@ -1265,26 +1321,55 @@ fn cmd_reply(
             b
         }
     };
-    if text.trim().is_empty() {
+    if text.trim().is_empty() && attach.is_empty() {
         return usage("empty reply");
     }
     let mut body = json!({
         "conversation_id": c, "text": text, "end_turn": !more,
         "client_msg_id": format!("ohs_{}", rand_hex(24)),
     });
+    if !attach.is_empty() {
+        let mut list = Vec::new();
+        for p in &attach {
+            let p = p.clone();
+            let bytes = std::fs::read(&p).or_else(|e| usage(format!("{}: {e}", p.display())))?;
+            if bytes.is_empty() {
+                return usage(format!("{}: empty file", p.display()));
+            }
+            let name = p
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            list.push(json!({"name": name, "data": b64(&bytes)}));
+        }
+        body["attachments"] = Value::Array(list);
+    }
     if let Some(r) = reasoning {
         body["reasoning"] = json!(r);
     }
-    let r = cx.call("POST", "/v1/seat/reply", Some(body), 60)?;
+    let r = cx.call("POST", "/v1/seat/reply", Some(body), 120)?;
+    if !attach.is_empty() {
+        if let Some(i) = cx.st.convs.get_mut(&c) {
+            i.api = false;
+        }
+        cx.save();
+    }
     if cx.json {
         cx.out(&r);
     } else {
+        let abandoned = r.get("abandoned").and_then(|v| v.as_bool()) == Some(true);
         let how = match r.get("live").and_then(|v| v.as_bool()) {
+            _ if abandoned => "the caller stopped waiting for this task; nothing delivered",
             Some(true) => "delivered live",
             Some(false) => "caller not connected; it gets the reply with its next request",
             None => "sent",
         };
-        println!("replied conv={c} ({how})");
+        let files = if attach.is_empty() {
+            String::new()
+        } else {
+            format!(", {} file(s)", attach.len())
+        };
+        println!("replied conv={c} ({how}{files})");
     }
     Ok(OK)
 }
@@ -2498,12 +2583,13 @@ fn run(cli: Cli) -> R<u8> {
             file,
             conv,
             reasoning,
+            attach,
             more,
             next,
             timeout,
             force,
         } => {
-            cmd_reply(&mut cx, text, file, conv, reasoning, more, force)?;
+            cmd_reply(&mut cx, text, file, conv, reasoning, attach, more, force)?;
             if next {
                 cmd_next(&mut cx, timeout, false)
             } else {

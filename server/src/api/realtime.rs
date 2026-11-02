@@ -67,14 +67,29 @@ fn default_session(model: &str) -> Value {
 /// Merge a session update into the session (objects merge, the rest is
 /// replaced).
 fn merge(into: &mut Value, from: &Value) {
+    // The session's own kind and id stay; nested `type`s (formats, turn
+    // detection) are ordinary settings.
+    if let (Value::Object(a), Value::Object(b)) = (&mut *into, from) {
+        for (k, v) in b {
+            if k == "type" || k == "id" || k == "object" {
+                continue;
+            }
+            match a.get_mut(k) {
+                Some(x) => merge_value(x, v),
+                None => {
+                    a.insert(k.clone(), v.clone());
+                }
+            }
+        }
+    }
+}
+
+fn merge_value(into: &mut Value, from: &Value) {
     match (into, from) {
         (Value::Object(a), Value::Object(b)) => {
             for (k, v) in b {
-                if k == "type" || k == "id" || k == "object" {
-                    continue;
-                }
                 match a.get_mut(k) {
-                    Some(x) if x.is_object() && v.is_object() => merge(x, v),
+                    Some(x) if x.is_object() && v.is_object() => merge_value(x, v),
                     _ => {
                         a.insert(k.clone(), v.clone());
                     }
@@ -99,23 +114,13 @@ pub async fn client_secrets(principal: AuthPrincipal, body: Option<Json<Value>>)
         .and_then(|m| m.as_str())
         .unwrap_or("gpt-realtime")
         .to_string();
-    let mut session = default_session(&model);
+    let mut session = if cfg["type"] == "transcription" {
+        transcription_session(&json!({}))
+    } else {
+        default_session(&model)
+    };
     merge(&mut session, &cfg);
-    let value = format!("ek_{}", uuid::Uuid::new_v4().simple());
-    let expires_at = chrono::Utc::now().timestamp() + secs;
-    {
-        let mut g = ephemeral().lock().unwrap();
-        let now = chrono::Utc::now().timestamp();
-        g.retain(|_, e| e.expires_at > now);
-        g.insert(
-            value.clone(),
-            Ephemeral {
-                principal,
-                session: session.clone(),
-                expires_at,
-            },
-        );
-    }
+    let (value, expires_at) = mint(principal, session.clone(), secs);
     Json(json!({
         "value": value,
         "expires_at": expires_at,
@@ -133,6 +138,8 @@ pub struct RtQuery {
     #[serde(default)]
     model: Option<String>,
     #[serde(default)]
+    intent: Option<String>,
+    #[serde(default)]
     call_id: Option<String>,
 }
 
@@ -142,54 +149,20 @@ pub async fn realtime(
     headers: HeaderMap,
     axum::extract::Query(q): axum::extract::Query<RtQuery>,
 ) -> Response {
-    let protocols: Vec<String> = headers
-        .get("sec-websocket-protocol")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.split(',').map(|p| p.trim().to_string()).collect())
-        .unwrap_or_default();
-    let key = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|h| h.strip_prefix("Bearer "))
-        .map(|s| s.trim().to_string())
-        .or_else(|| {
-            protocols
-                .iter()
-                .find_map(|p| p.strip_prefix("openai-insecure-api-key.").map(String::from))
-        });
-    let Some(key) = key else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({"error": {"message": "Missing API key", "code": "missing_api_key"}})),
-        )
-            .into_response();
+    let (principal, preset, protocols) = match caller(&app, &headers).await {
+        Ok(r) => r,
+        Err(e) => return e,
     };
     let _ = q.call_id;
-    let (principal, preset) = if key.starts_with("ek_") {
-        let g = ephemeral().lock().unwrap();
-        match g.get(&key).filter(|e| e.expires_at > chrono::Utc::now().timestamp()) {
-            Some(e) => (e.principal.clone(), Some(e.session.clone())),
-            None => {
-                return (StatusCode::UNAUTHORIZED, Json(json!({"error": {"message": "Expired or unknown client secret", "code": "invalid_api_key"}}))).into_response()
-            }
-        }
-    } else {
-        match app.identity.resolve_principal(&key).await {
-            Some(p) if p.api_key.scope.may_call() => (p, None),
-            _ => {
-                return (
-                    StatusCode::UNAUTHORIZED,
-                    Json(
-                        json!({"error": {"message": "Invalid API key", "code": "invalid_api_key"}}),
-                    ),
-                )
-                    .into_response()
-            }
-        }
-    };
     let model = q.model.unwrap_or_else(|| "gpt-realtime".into());
     let mut session = default_session(&model);
+    if q.intent.as_deref() == Some("transcription") {
+        session = transcription_session(&json!({}));
+    }
     if let Some(p) = preset {
+        if p["type"] == "translation" {
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": {"message": "This client secret is for /v1/realtime/translations", "code": "invalid_session_type"}}))).into_response();
+        }
         merge(&mut session, &p);
     }
     let ws = if protocols.iter().any(|p| p == "realtime") {
@@ -406,6 +379,13 @@ async fn handle(
             merge(&mut c.session, &upd);
             let _ = tx.send(json!({"type": "session.updated", "session": c.session}));
         }
+        "transcription_session.update" => {
+            let upd = beta_transcription(&ev.get("session").cloned().unwrap_or(json!({})));
+            merge(&mut c.session, &upd);
+            let _ = tx.send(
+                json!({"type": "transcription_session.updated", "session": beta_view(&c.session)}),
+            );
+        }
         "input_audio_buffer.append" => {
             let Some(b) = ev
                 .get("audio")
@@ -469,10 +449,23 @@ async fn handle(
                         let at = (c.buffer.len() / 48) as u64;
                         let _ = tx.send(json!({"type": "input_audio_buffer.speech_stopped", "audio_end_ms": at, "item_id": Value::Null}));
                         let committed = commit(&mut c, tx);
+                        if let Some(id) = &committed {
+                            transcribe(
+                                &c,
+                                id,
+                                conn.clone(),
+                                tx.clone(),
+                                app,
+                                principal,
+                                headers,
+                                sid,
+                            );
+                        }
                         let create = td
                             .get("create_response")
                             .and_then(|v| v.as_bool())
-                            .unwrap_or(true);
+                            .unwrap_or(true)
+                            && c.session["type"] != "transcription";
                         if committed.is_some() && create {
                             start_response(
                                 &mut c,
@@ -490,7 +483,18 @@ async fn handle(
             }
         }
         "input_audio_buffer.commit" => {
-            if commit(&mut c, tx).is_none() {
+            if let Some(id) = commit(&mut c, tx) {
+                transcribe(
+                    &c,
+                    &id,
+                    conn.clone(),
+                    tx.clone(),
+                    app,
+                    principal,
+                    headers,
+                    sid,
+                );
+            } else {
                 let _ = tx.send(error_ev(
                     "invalid_request_error",
                     "input_audio_buffer_commit_empty",
@@ -564,6 +568,14 @@ async fn handle(
             let _ = tx.send(json!({"type": "conversation.item.truncated", "item_id": id,
                 "content_index": ev.get("content_index").cloned().unwrap_or(json!(0)),
                 "audio_end_ms": ev.get("audio_end_ms").cloned().unwrap_or(json!(0))}));
+        }
+        "response.create" if c.session["type"] == "transcription" => {
+            let _ = tx.send(error_ev(
+                "invalid_request_error",
+                "invalid_session_type",
+                "a transcription session makes no responses",
+                eid,
+            ));
         }
         "response.create" => {
             let opts = ev.get("response").cloned().unwrap_or(json!({}));
@@ -920,6 +932,537 @@ fn start_response(
     c.running = Some(task.abort_handle());
 }
 
+// ── shared by the WebSocket endpoints ──
+
+/// The caller of a WebSocket: an API key or a client secret (header or the
+/// `openai-insecure-api-key.` protocol), with the secret's preset session.
+#[allow(clippy::result_large_err)] // the error is the HTTP response itself
+async fn caller(
+    app: &AppState,
+    headers: &HeaderMap,
+) -> Result<(AuthPrincipal, Option<Value>, Vec<String>), Response> {
+    let protocols: Vec<String> = headers
+        .get("sec-websocket-protocol")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.split(',').map(|p| p.trim().to_string()).collect())
+        .unwrap_or_default();
+    let key = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer "))
+        .map(|s| s.trim().to_string())
+        .or_else(|| {
+            protocols
+                .iter()
+                .find_map(|p| p.strip_prefix("openai-insecure-api-key.").map(String::from))
+        });
+    let unauthorized = |m: &str, code: &str| {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": {"message": m, "type": "invalid_request_error", "code": code}})),
+        )
+            .into_response()
+    };
+    let Some(key) = key else {
+        return Err(unauthorized("Missing API key", "missing_api_key"));
+    };
+    if key.starts_with("ek_") {
+        let g = ephemeral().lock().unwrap();
+        return match g
+            .get(&key)
+            .filter(|e| e.expires_at > chrono::Utc::now().timestamp())
+        {
+            Some(e) => Ok((e.principal.clone(), Some(e.session.clone()), protocols)),
+            None => Err(unauthorized(
+                "Expired or unknown client secret",
+                "invalid_api_key",
+            )),
+        };
+    }
+    match app.identity.resolve_principal(&key).await {
+        Some(p) if p.api_key.scope.may_call() => Ok((p, None, protocols)),
+        _ => Err(unauthorized("Invalid API key", "invalid_api_key")),
+    }
+}
+
+/// Mint a client secret for a session.
+fn mint(principal: AuthPrincipal, session: Value, secs: i64) -> (String, i64) {
+    let value = format!("ek_{}", uuid::Uuid::new_v4().simple());
+    let expires_at = chrono::Utc::now().timestamp() + secs;
+    let mut g = ephemeral().lock().unwrap();
+    let now = chrono::Utc::now().timestamp();
+    g.retain(|_, e| e.expires_at > now);
+    g.insert(
+        value.clone(),
+        Ephemeral {
+            principal,
+            session,
+            expires_at,
+        },
+    );
+    (value, expires_at)
+}
+
+fn expiry(b: &Value) -> i64 {
+    b.pointer("/expires_after/seconds")
+        .or_else(|| b.pointer("/client_secret/expires_at/seconds"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(600)
+        .clamp(10, 7200)
+}
+
+/// One seat task outside a response (an input transcription, a
+/// translated segment), in its own conversation per connection.
+#[allow(clippy::too_many_arguments)]
+async fn seat_task(
+    app: AppState,
+    principal: AuthPrincipal,
+    headers: HeaderMap,
+    api: &str,
+    expected: String,
+    files: bool,
+    session: String,
+    audio_url: String,
+) -> Result<crate::api::task::Answer, String> {
+    let req = json!({
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": "(speech attached)"},
+            {"type": "image_url", "image_url": {"url": audio_url}}]}],
+        "stream": false,
+        "metadata": {crate::api::openai::TASK_KEY: {"api": api, "expected": expected, "files": files, "session": session}},
+    });
+    let req = serde_json::from_value(req).map_err(|e| e.to_string())?;
+    let resp =
+        crate::api::openai::chat_completions(State(app), principal, headers, Json(req)).await;
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap_or_default();
+    crate::api::task::answer_from_chat(&bytes).await
+}
+
+fn speech_url(pcm: &[u8], rate: u32) -> String {
+    crate::openai_compat::named_data_url(
+        "audio/wav",
+        Some("speech.wav"),
+        &crate::openai_compat::b64_encode(&wav(pcm, rate)),
+    )
+}
+
+/// The first audio file of an answer.
+fn answer_audio(a: &crate::api::task::Answer) -> Option<Vec<u8>> {
+    a.files.iter().find_map(|o| match o {
+        crate::api::task::Output::Bytes { mime, bytes, .. }
+            if mime.starts_with("audio/") || mime == "application/octet-stream" =>
+        {
+            Some(bytes.clone())
+        }
+        _ => None,
+    })
+}
+
+// ── input transcription and transcription sessions ──
+
+fn transcription_session(cfg: &Value) -> Value {
+    let mut s = json!({
+        "type": "transcription",
+        "object": "realtime.transcription_session",
+        "id": uid("sess"),
+        "audio": {
+            "input": {
+                "format": {"type": "audio/pcm", "rate": 24000},
+                "transcription": {"model": "gpt-4o-transcribe", "language": null, "prompt": ""},
+                "noise_reduction": null,
+                "turn_detection": {"type": "server_vad", "threshold": 0.5, "prefix_padding_ms": 300,
+                                   "silence_duration_ms": 500}
+            }
+        },
+        "include": [],
+    });
+    merge(&mut s, cfg);
+    s
+}
+
+/// A beta `transcription_session` body (flat fields) as a GA session update.
+fn beta_transcription(b: &Value) -> Value {
+    let mut input = Map::new();
+    if let Some(t) = b.get("input_audio_transcription") {
+        input.insert("transcription".into(), t.clone());
+    }
+    if let Some(t) = b.get("turn_detection") {
+        input.insert("turn_detection".into(), t.clone());
+    }
+    if let Some(t) = b.get("input_audio_noise_reduction") {
+        input.insert("noise_reduction".into(), t.clone());
+    }
+    if let Some(f) = b.get("input_audio_format").and_then(|v| v.as_str()) {
+        let ty = match f {
+            "g711_ulaw" => "audio/pcmu",
+            "g711_alaw" => "audio/pcma",
+            _ => "audio/pcm",
+        };
+        input.insert("format".into(), json!({"type": ty}));
+    }
+    let mut out = json!({"audio": {"input": input}});
+    if let Some(i) = b.get("include") {
+        out["include"] = i.clone();
+    }
+    out
+}
+
+/// A GA transcription session in the beta shape.
+fn beta_view(s: &Value) -> Value {
+    let i = s.pointer("/audio/input").cloned().unwrap_or(json!({}));
+    let fmt = match i.pointer("/format/type").and_then(|v| v.as_str()) {
+        Some("audio/pcmu") => "g711_ulaw",
+        Some("audio/pcma") => "g711_alaw",
+        _ => "pcm16",
+    };
+    json!({
+        "id": s["id"], "object": "realtime.transcription_session",
+        "modalities": ["text"], "input_audio_format": fmt,
+        "input_audio_transcription": i["transcription"],
+        "turn_detection": i["turn_detection"],
+        "input_audio_noise_reduction": i["noise_reduction"],
+        "include": s["include"],
+    })
+}
+
+/// `POST /v1/realtime/transcription_sessions` (beta): a transcription
+/// session and its client secret; connect with `?intent=transcription`.
+pub async fn transcription_sessions(
+    principal: AuthPrincipal,
+    body: Option<Json<Value>>,
+) -> Response {
+    let b = body.map(|Json(b)| b).unwrap_or(json!({}));
+    let session = transcription_session(&beta_transcription(&b));
+    let (value, expires_at) = mint(principal, session.clone(), expiry(&b));
+    let mut v = beta_view(&session);
+    v["client_secret"] = json!({"value": value, "expires_at": expires_at});
+    Json(v).into_response()
+}
+
+/// Transcribe a committed user turn when the session asks for it, and
+/// report it as `conversation.item.input_audio_transcription.*`.
+#[allow(clippy::too_many_arguments)]
+fn transcribe(
+    c: &Conn,
+    item_id: &str,
+    conn: std::sync::Arc<tokio::sync::Mutex<Conn>>,
+    tx: mpsc::UnboundedSender<Value>,
+    app: &AppState,
+    principal: &AuthPrincipal,
+    headers: &HeaderMap,
+    sid: &str,
+) {
+    let t = c
+        .session
+        .pointer("/audio/input/transcription")
+        .cloned()
+        .unwrap_or(Value::Null);
+    if t.is_null() && c.session["type"] != "transcription" {
+        return;
+    }
+    let Some(pcm) = c.audio.get(item_id) else {
+        return;
+    };
+    let rate = c
+        .session
+        .pointer("/audio/input/format/rate")
+        .and_then(|r| r.as_u64())
+        .unwrap_or(24000) as u32;
+    let mut expected = match t.get("language").and_then(|l| l.as_str()) {
+        Some(l) if !l.is_empty() => {
+            format!("realtime input transcription: transcribe the attached audio (language {l})")
+        }
+        _ => "realtime input transcription: transcribe the attached audio".to_string(),
+    };
+    expected.push_str("; answer with the text alone");
+    if let Some(p) = t
+        .get("prompt")
+        .and_then(|p| p.as_str())
+        .filter(|p| !p.is_empty())
+    {
+        expected.push_str(&format!("; context from the caller: {p}"));
+    }
+    let url = speech_url(pcm, rate);
+    let (app, principal, headers) = (app.clone(), principal.clone(), headers.clone());
+    let (item_id, session) = (item_id.to_string(), format!("{sid}.transcribe"));
+    tokio::spawn(async move {
+        let a = seat_task(
+            app,
+            principal,
+            headers,
+            "realtime.transcription",
+            expected,
+            false,
+            session,
+            url,
+        )
+        .await;
+        match a {
+            Ok(a) => {
+                let text = a.text.trim().to_string();
+                let _ = tx.send(json!({"type": "conversation.item.input_audio_transcription.delta", "item_id": item_id, "content_index": 0, "delta": text}));
+                let _ = tx.send(json!({"type": "conversation.item.input_audio_transcription.completed", "item_id": item_id, "content_index": 0, "transcript": text,
+                    "usage": {"type": "duration", "seconds": 0}}));
+                let mut c = conn.lock().await;
+                if let Some(it) = c.items.iter_mut().find(|i| i["id"] == json!(item_id)) {
+                    it["content"][0]["transcript"] = json!(text);
+                }
+            }
+            Err(e) => {
+                let _ = tx.send(json!({"type": "conversation.item.input_audio_transcription.failed", "item_id": item_id, "content_index": 0,
+                    "error": {"type": "server_error", "code": "seat_unavailable", "message": e}}));
+            }
+        }
+    });
+}
+
+// ── realtime translation ──
+
+fn translation_session(model: &str, cfg: &Value) -> Value {
+    let mut s = json!({
+        "type": "translation",
+        "id": uid("sess"),
+        "model": model,
+        "expires_at": 0,
+        "audio": {"input": {"transcription": null, "noise_reduction": null}, "output": {"language": "en"}},
+    });
+    merge(&mut s, cfg);
+    s
+}
+
+/// `POST /v1/realtime/translations/client_secrets`
+pub async fn translation_client_secrets(
+    principal: AuthPrincipal,
+    body: Option<Json<Value>>,
+) -> Response {
+    let b = body.map(|Json(b)| b).unwrap_or(json!({}));
+    let cfg = b.get("session").cloned().unwrap_or(json!({}));
+    let model = cfg["model"]
+        .as_str()
+        .unwrap_or("gpt-realtime-translate")
+        .to_string();
+    let mut session = translation_session(&model, &cfg);
+    let (value, expires_at) = mint(principal, session.clone(), expiry(&b));
+    session["expires_at"] = json!(expires_at);
+    Json(json!({"value": value, "expires_at": expires_at, "session": session})).into_response()
+}
+
+/// `GET /v1/realtime/translations` (WebSocket): source audio in, the
+/// translation out as speech and transcript. Each pause (or 15 s of
+/// speech) closes a segment, which becomes one seat task; segments are
+/// answered in order.
+pub async fn translations(
+    ws: WebSocketUpgrade,
+    State(app): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<RtQuery>,
+) -> Response {
+    let (principal, preset, protocols) = match caller(&app, &headers).await {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    let model = q.model.unwrap_or_else(|| "gpt-realtime-translate".into());
+    let session = match preset {
+        Some(p) if p["type"] != "translation" => {
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": {"message": "This client secret is not for a translation session", "type": "invalid_request_error", "code": "invalid_session_type"}}))).into_response()
+        }
+        Some(p) => p,
+        None => translation_session(&model, &json!({})),
+    };
+    let ws = if protocols.iter().any(|p| p == "realtime") {
+        ws.protocols(["realtime"])
+    } else {
+        ws
+    };
+    ws.on_upgrade(move |socket| run_translation(socket, app, principal, headers, session))
+}
+
+async fn run_translation(
+    socket: WebSocket,
+    app: AppState,
+    principal: AuthPrincipal,
+    headers: HeaderMap,
+    mut session: Value,
+) {
+    let (mut sink, mut stream) = socket.split();
+    let (tx, mut rx) = mpsc::unbounded_channel::<Value>();
+    let writer = tokio::spawn(async move {
+        while let Some(mut ev) = rx.recv().await {
+            if ev.get("event_id").is_none() {
+                ev["event_id"] = json!(uid("event"));
+            }
+            if sink.send(WsMessage::Text(ev.to_string())).await.is_err() {
+                break;
+            }
+        }
+        let _ = sink.close().await;
+    });
+    let sid = session["id"].as_str().unwrap_or("").to_string();
+    let _ = tx.send(json!({"type": "session.created", "session": session}));
+    // Segments go to one worker so the output keeps the speaker's order.
+    let (seg_tx, mut seg_rx) = mpsc::unbounded_channel::<(Vec<u8>, u64, Value)>();
+    let worker = {
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            while let Some((pcm, end_ms, s)) = seg_rx.recv().await {
+                let lang = s
+                    .pointer("/audio/output/language")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("en")
+                    .to_string();
+                let heard = !s
+                    .pointer("/audio/input/transcription")
+                    .cloned()
+                    .unwrap_or(Value::Null)
+                    .is_null();
+                let mut expected = format!("realtime translation: translate the attached speech into {lang} and attach the translation spoken as audio (WAV, 16-bit mono 24000 Hz): `oh-seat reply 'the translation' -a out.wav` (the text is the translation's transcript)");
+                if heard {
+                    expected.push_str("; start the text with a line `heard: <what the speaker said, in their own language>`");
+                }
+                let a = seat_task(
+                    app.clone(),
+                    principal.clone(),
+                    headers.clone(),
+                    "realtime.translation",
+                    expected,
+                    true,
+                    format!("{sid}.translate"),
+                    speech_url(&pcm, 24000),
+                )
+                .await;
+                match a {
+                    Ok(a) => {
+                        let mut text = a.text.trim().to_string();
+                        if let Some(rest) = text.strip_prefix("heard:") {
+                            let (h, t) = rest.split_once('\n').unwrap_or((rest, ""));
+                            let _ = tx.send(json!({"type": "session.input_transcript.delta", "delta": h.trim(), "elapsed_ms": end_ms}));
+                            text = t.trim().to_string();
+                        }
+                        if !text.is_empty() {
+                            let _ = tx.send(json!({"type": "session.output_transcript.delta", "delta": text, "elapsed_ms": end_ms}));
+                        }
+                        if let Some(b) = answer_audio(&a) {
+                            for chunk in wav_data(&b).chunks(24000) {
+                                let _ = tx.send(json!({"type": "session.output_audio.delta", "delta": crate::openai_compat::b64_encode(chunk),
+                                    "format": "pcm16", "sample_rate": 24000, "channels": 1, "elapsed_ms": end_ms}));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx.send(error_ev("server_error", "seat_unavailable", &e, None));
+                    }
+                }
+            }
+        })
+    };
+    let (mut buffer, mut total, mut speaking, mut quiet) =
+        (Vec::<u8>::new(), 0usize, false, 0usize);
+    let mut closed = false;
+    while let Some(Ok(msg)) = stream.next().await {
+        let text = match msg {
+            WsMessage::Text(t) => t,
+            WsMessage::Close(_) => break,
+            _ => continue,
+        };
+        let Ok(ev) = serde_json::from_str::<Value>(&text) else {
+            let _ = tx.send(error_ev(
+                "invalid_request_error",
+                "invalid_json",
+                "event is not JSON",
+                None,
+            ));
+            continue;
+        };
+        let eid = ev.get("event_id");
+        match ev["type"].as_str().unwrap_or("") {
+            "session.update" => {
+                let upd = ev.get("session").cloned().unwrap_or(json!({}));
+                merge(&mut session, &upd);
+                let _ = tx.send(json!({"type": "session.updated", "session": session}));
+            }
+            "session.input_audio_buffer.append" => {
+                let Some(b) = ev["audio"]
+                    .as_str()
+                    .and_then(crate::openai_compat::b64_decode)
+                else {
+                    let _ = tx.send(error_ev(
+                        "invalid_request_error",
+                        "invalid_audio",
+                        "audio must be base64",
+                        eid,
+                    ));
+                    continue;
+                };
+                total += b.len();
+                buffer.extend_from_slice(&b);
+                if pcm_level(&b) > 0.05 {
+                    speaking = true;
+                    quiet = 0;
+                } else if speaking {
+                    quiet += b.len();
+                }
+                // 500 ms of quiet after speech, or 15 s of audio, ends a segment.
+                if (speaking && quiet >= 500 * 48) || buffer.len() >= 15 * 48_000 {
+                    if speaking || quiet < buffer.len() {
+                        let _ = seg_tx.send((
+                            std::mem::take(&mut buffer),
+                            (total / 48) as u64,
+                            session.clone(),
+                        ));
+                    }
+                    buffer.clear();
+                    speaking = false;
+                    quiet = 0;
+                }
+            }
+            "session.close" => {
+                closed = true;
+                break;
+            }
+            other => {
+                let _ = tx.send(error_ev(
+                    "invalid_request_error",
+                    "unknown_event",
+                    &format!("unsupported event type {other}"),
+                    eid,
+                ));
+            }
+        }
+    }
+    if closed {
+        // Finish what was said before the close.
+        if speaking && !buffer.is_empty() {
+            let _ = seg_tx.send((
+                std::mem::take(&mut buffer),
+                (total / 48) as u64,
+                session.clone(),
+            ));
+        }
+        drop(seg_tx);
+        let _ = worker.await;
+        let _ = tx.send(json!({"type": "session.closed"}));
+    } else {
+        worker.abort();
+    }
+    drop(tx);
+    let _ = writer.await;
+}
+
+// ── SIP / WebRTC calls ──
+
+/// `/v1/realtime/calls*`: calls need a WebRTC or SIP media stack, which
+/// this server does not have; the WebSocket carries the same sessions.
+pub async fn calls() -> Response {
+    crate::api::task::error(
+        StatusCode::NOT_IMPLEMENTED,
+        "invalid_request_error",
+        "not_implemented",
+        "Realtime calls (WebRTC and SIP) are not supported by this server; connect over the WebSocket at /v1/realtime instead.",
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -934,6 +1477,19 @@ mod tests {
     }
 
     #[test]
+    fn beta_transcription_maps_to_ga() {
+        let s = transcription_session(&beta_transcription(&json!({
+            "input_audio_format": "g711_ulaw",
+            "input_audio_transcription": {"model": "whisper-1", "language": "zh"}
+        })));
+        assert_eq!(s["type"], "transcription");
+        assert_eq!(s["audio"]["input"]["format"]["type"], "audio/pcmu");
+        let v = beta_view(&s);
+        assert_eq!(v["input_audio_format"], "g711_ulaw");
+        assert_eq!(v["input_audio_transcription"]["language"], "zh");
+    }
+
+    #[test]
     fn session_updates_merge() {
         let mut s = default_session("m");
         merge(
@@ -943,5 +1499,11 @@ mod tests {
         assert_eq!(s["instructions"], "hi");
         assert_eq!(s["audio"]["output"]["voice"], "echo");
         assert_eq!(s["audio"]["output"]["format"]["rate"], 24000);
+        merge(
+            &mut s,
+            &json!({"type": "transcription", "audio": {"input": {"format": {"type": "audio/pcmu"}}}}),
+        );
+        assert_eq!(s["type"], "realtime");
+        assert_eq!(s["audio"]["input"]["format"]["type"], "audio/pcmu");
     }
 }

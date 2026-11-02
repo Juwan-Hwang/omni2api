@@ -107,6 +107,9 @@ What the server does for whoever sits in the seat:
   files, file batches and content; search is a seat task (the store's files
   attached, ranked passages back, checked). `/v1/containers` and their
   files. In memory, per key.
+- **Assistants API.** Assistants, threads, messages, runs (poll or
+  stream, function tools with `submit_tool_outputs`, steps, cancel,
+  create-and-run). A thread is one conversation of the seat's.
 - **Fine-tuning, evals, graders.** A fine-tuning job hands the training
   file to the seat and succeeds with an `ft:` model (events, checkpoints,
   listed in `/v1/models`, deletable). Evals sample each row through the

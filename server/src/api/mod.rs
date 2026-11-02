@@ -5,6 +5,7 @@
 //! Phase 10: `GET /v1/replies/{invocation_id}` (async reply polling)
 
 pub mod adapters;
+pub mod assistants;
 pub mod audio;
 pub mod batches;
 pub mod completions;

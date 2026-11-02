@@ -59,6 +59,7 @@ omni2api 服务器（Rust + Axum）
 - **不止聊天。** 其他 OpenAI 端点以一次性任务的形式交给席位，附一行要求（`API images.generations: 1 png image(s), size 1024x1024 ...`）；席位用文件作答（`oh-seat reply -a out.png`），或文字作答，调用方拿到标准响应：`/v1/images/generations`、`/edits`、`/variations`（`b64_json`、`url`、`n`、流式）；`/v1/audio/speech`（原始音频或 SSE）、`/transcriptions`、`/translations`（json、text、srt、vtt、verbose_json、diarized_json、流式）；`/v1/videos`（排队任务，席位附上 mp4 和可选缩略图；内容、remix、列表、删除）；`/v1/embeddings`（席位给出向量，送达前校验；支持 `dimensions`、float 或 base64）；`/v1/moderations`（文本和图片输入，席位给出违规类别）；旧版 `/v1/completions`（suffix 填空、`n`、`echo`、`stop`、流式）。
 - **Realtime。** WebSocket `/v1/realtime`（请求头密钥，或 `client_secrets` 临时密钥作为浏览器子协议）：文字或语音轮次、工具、服务端 VAD 轮替、取消。每次响应都是席位所在会话的一轮；输入音频以 WAV 送达，语音输出由席位附上音频、文字作为转写。
 - **对象存储。** Responses 默认保存（`store`）：支持 `previous_response_id`、`background`（轮询与取消）、查询、删除、`input_items`、`input_tokens`、`compact`（席位写摘要，之后用压缩项代替历史）。`store: true` 的 Chat Completions 可列出、查询、改 metadata、删除、读消息。Conversations API（`conv_` id、items、Responses 的 `conversation` 参数）与本服务自己的历史接口（`cnv_` id，席位密钥）共用 `/v1/conversations`。`/v1/uploads`（分片合成文件）与 `/v1/batches`（JSONL 每行走对应端点，并发 4，产出输出与错误文件，可取消）。`/v1/vector_stores`（文件、批量文件、内容）；搜索交给席位（附上库内文件，返回排序后的段落并校验）。`/v1/containers` 及其文件。
+- **Assistants API。** 助手、线程、消息、运行（轮询或流式、函数工具与 `submit_tool_outputs`、步骤、取消、create-and-run）。一个线程就是席位的一个会话。
 - **微调、评测、评分器。** 微调任务把训练文件交给席位，完成后得到 `ft:` 模型（事件、检查点、出现在 `/v1/models`、可删除）。Evals 让席位逐行采样并评分：`string_check`、`text_similarity` 由服务端计算，模型与 python 评分器由席位作答；支持 `/v1/fine_tuning/alpha/graders` 的 run 与 validate。保存在内存，按密钥隔离。
 
 ## 快速开始

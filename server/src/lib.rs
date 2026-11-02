@@ -233,6 +233,11 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/v1/videos/:id/content", get(api::videos::content))
         .route("/v1/videos/:id/remix", post(api::videos::remix))
+        .route(
+            "/v1/realtime/client_secrets",
+            post(api::realtime::client_secrets),
+        )
+        .route("/v1/realtime/sessions", post(api::realtime::client_secrets))
         .route("/v1/uploads", post(api::uploads::create))
         .route(
             "/v1/uploads/:id/parts",
@@ -363,6 +368,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/healthz", get(health))
         // Seat-made outputs (pictures, audio) handed back as links.
         .route("/files/:file_id", get(api::files::public))
+        // Realtime authenticates itself: browsers send the key as a
+        // WebSocket subprotocol, which no header middleware sees.
+        .route("/v1/realtime", get(api::realtime::realtime))
+        .route("/v1/v1/realtime", get(api::realtime::realtime))
         .route("/ws", get(ws::ws_handler));
 
     // `/v1/mock/*` impersonates the human — forgeable replies, tool calls,

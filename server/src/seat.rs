@@ -379,7 +379,7 @@ fn render(cursor: u64, ev: &Value, full: bool) -> Value {
                 out["client"] = req.get("client").cloned().unwrap_or(Value::Null);
                 let kind = req.get("kind").cloned().unwrap_or(Value::Null);
                 if matches!(kind.as_str(), Some("auxiliary") | Some("api")) {
-                    for k in ["api", "wants_files"] {
+                    for k in ["api", "wants_files", "session"] {
                         if let Some(v) = req.get(k).filter(|v| !v.is_null()) {
                             out[k] = v.clone();
                         }

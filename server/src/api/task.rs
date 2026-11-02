@@ -25,6 +25,8 @@ pub struct Answer {
     pub text: String,
     /// Files, in the order the seat gave them.
     pub files: Vec<Output>,
+    /// Tool calls the seat made instead of (or with) text, chat-shaped.
+    pub tool_calls: Vec<Value>,
 }
 
 pub enum Output {
@@ -251,7 +253,7 @@ pub fn sse(event: &str, data: &Value) -> String {
 }
 
 /// The seat's answer out of a non-streaming chat completion body.
-async fn answer_from_chat(body: &[u8]) -> Result<Answer, String> {
+pub(crate) async fn answer_from_chat(body: &[u8]) -> Result<Answer, String> {
     let text = String::from_utf8_lossy(body);
     let v: Value = serde_json::from_str(text.trim())
         .map_err(|_| format!("unreadable answer: {}", text.trim()))?;
@@ -273,7 +275,13 @@ async fn answer_from_chat(body: &[u8]) -> Result<Answer, String> {
         .and_then(|c| c.as_str())
         .unwrap_or("")
         .to_string();
-    Ok(parse_answer(&content))
+    let mut a = parse_answer(&content);
+    a.tool_calls = v
+        .pointer("/choices/0/message/tool_calls")
+        .and_then(|t| t.as_array())
+        .cloned()
+        .unwrap_or_default();
+    Ok(a)
 }
 
 /// Split a reply into its text and the files it names: attachment ids
@@ -348,6 +356,7 @@ pub fn parse_answer(content: &str) -> Answer {
         raw: content.to_string(),
         text: text.trim().to_string(),
         files,
+        tool_calls: Vec::new(),
     }
 }
 

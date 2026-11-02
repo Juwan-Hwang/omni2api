@@ -16,6 +16,7 @@ pub mod images;
 pub mod mock;
 pub mod moderations;
 pub mod openai;
+pub mod realtime;
 pub mod replies;
 pub mod stored;
 pub mod task;

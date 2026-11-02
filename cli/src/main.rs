@@ -667,7 +667,7 @@ impl Ctx {
         if s(e, "type") == Some("message.received") {
             info.last = s(e, "text").unwrap_or("").chars().take(100).collect();
             info.t = now_secs();
-            info.aux = aux_hint(e).is_some();
+            info.aux = is_aux(e);
             info.task = s(e, "kind") == Some("api");
             info.api = s(e, "kind") == Some("api")
                 && e.get("wants_files").and_then(|v| v.as_bool()) != Some(false);
@@ -805,6 +805,12 @@ fn conv_id(e: &Value) -> Option<&str> {
 }
 
 // ── rendering ──
+
+/// A side call answered with `-c` (titles, one-off API tasks), as opposed
+/// to a conversation the seat sits in (a chat, a realtime session).
+fn is_aux(e: &Value) -> bool {
+    aux_hint(e).is_some() && e.get("session").and_then(|v| v.as_bool()) != Some(true)
+}
 
 fn aux_hint(e: &Value) -> Option<String> {
     if let Some(f) = s(e, "expected_format") {
@@ -947,7 +953,11 @@ fn print_event(e: &Value) {
             let mut h = format!("MESSAGE conv={c} client={}", s(e, "client").unwrap_or("?"));
             if let (Some("api"), Some(f)) = (s(e, "kind"), s(e, "expected_format")) {
                 let api = s(e, "api").unwrap_or("api");
-                h.push_str(&format!("  API {api}: {f}; reply with -c {c}"));
+                if e.get("session").and_then(|v| v.as_bool()) == Some(true) {
+                    h.push_str(&format!("  API {api}: {f}"));
+                } else {
+                    h.push_str(&format!("  API {api}: {f}; reply with -c {c}"));
+                }
             } else if let Some(a) = aux_hint(e) {
                 h.push_str(&format!("  AUX: {a}; reply with -c {c}"));
             }
@@ -1090,7 +1100,7 @@ fn cmd_next(cx: &mut Ctx, timeout: u64, all: bool) -> R<u8> {
                 // Auxiliary calls (titles, suggestions) never take over the
                 // active conversation: a later bare `reply` must still land
                 // in the real chat.
-                if s(e, "type") == Some("message.received") && aux_hint(e).is_none() {
+                if s(e, "type") == Some("message.received") && !is_aux(e) {
                     cx.st.active = conv_id(e).map(String::from);
                 }
                 if s(e, "type") == Some("conversation.started") {
@@ -1100,7 +1110,7 @@ fn cmd_next(cx: &mut Ctx, timeout: u64, all: bool) -> R<u8> {
                 }
             }
             for e in &show {
-                if let Some(c) = conv_id(e).filter(|_| aux_hint(e).is_none()) {
+                if let Some(c) = conv_id(e).filter(|_| !is_aux(e)) {
                     if !cx.st.caps.contains_key(c) && !new_convs.iter().any(|n| n == c) {
                         new_convs.push(c.to_string());
                     }

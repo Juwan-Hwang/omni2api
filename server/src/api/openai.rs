@@ -1368,7 +1368,14 @@ pub async fn chat_completions(
     );
 
     let task = task_of(&req);
-    let auxiliary = task.is_some() || is_auxiliary_request(&req);
+    // A task with a session (a realtime connection) is a conversation the
+    // seat sits in, not a side call.
+    let session_task = req
+        .metadata
+        .as_ref()
+        .and_then(|m| m.pointer(&format!("/{TASK_KEY}/session")))
+        .is_some();
+    let auxiliary = !session_task && (task.is_some() || is_auxiliary_request(&req));
     let tokenizer = headers
         .get("x-omni2api-tokenizer")
         .and_then(|v| v.to_str().ok())
@@ -1422,6 +1429,9 @@ pub async fn chat_completions(
         info["api"] = json!(api);
         info["expected_format"] = json!(expected);
         info["wants_files"] = json!(files);
+        if session_task {
+            info["session"] = json!(true);
+        }
     }
     for msg in &mut inbound_messages {
         if msg.metadata.contains_key("raw_tail") {
@@ -1438,7 +1448,17 @@ pub async fn chat_completions(
     // An API task (an image, a transcript...) is one request, one answer:
     // a conversation of its own, so two at once never race for a reply.
     let session_key = match &task {
-        Some((api, _, _)) => format!("task:{}:{}", api, uuid::Uuid::new_v4().simple()),
+        // A task that carries a session (a realtime connection) keeps one
+        // conversation across its turns.
+        Some((api, _, _)) => match req
+            .metadata
+            .as_ref()
+            .and_then(|m| m.pointer(&format!("/{TASK_KEY}/session")))
+            .and_then(|s| s.as_str())
+        {
+            Some(s) => format!("task:{api}:{s}"),
+            None => format!("task:{}:{}", api, uuid::Uuid::new_v4().simple()),
+        },
         None => resolve_session_key(&headers, &req, system_prompt.as_deref(), auxiliary),
     };
     let fallback_key = session_key.starts_with("prm:") || session_key.starts_with("cli:");
@@ -1569,7 +1589,13 @@ pub async fn chat_completions(
     //    session_title) in a conversation of its own records that tool, so
     //    the seat can call it.
     let aux_tool = auxiliary && forced_tool(&req).is_some() && session_key.starts_with("aux:");
-    if !auxiliary || aux_tool {
+    let task_tools = task.is_some()
+        && req
+            .tools
+            .as_ref()
+            .and_then(|t| t.as_array())
+            .is_some_and(|a| !a.is_empty());
+    if !auxiliary || aux_tool || task_tools {
         let capabilities = profile.capabilities.clone();
         let has_tools = !capabilities.is_empty();
         let context = profile.to_context();

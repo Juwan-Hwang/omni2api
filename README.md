@@ -89,6 +89,11 @@ What the server does for whoever sits in the seat:
   reach the caller; `dimensions`, float or base64); `/v1/moderations`
   (text and image inputs, the seat names the categories); legacy
   `/v1/completions` (suffix fill-in, `n`, `echo`, `stop`, streaming).
+- **Realtime.** `/v1/realtime` over WebSocket (header key, or
+  `client_secrets` ephemeral keys as the browser subprotocol): text or
+  voice turns, tools, server VAD turn taking, cancel. Each response is one
+  turn of a conversation the seat sits in; input audio arrives as WAV, and
+  for voice the seat attaches its spoken answer with the transcript as text.
 - **Stored objects.** Responses are kept (`store`, default on):
   `previous_response_id`, `background` with polling and cancel, retrieve,
   delete, `input_items`, `input_tokens`. Chat completions with

@@ -84,7 +84,9 @@ oh-seat reply 'Done.' --next          # answer, then wait for the next message
   the categories it violates (`[[], ["violence"]]`) or scores. With no chat
   active, a bare `reply` answers the newest waiting task. Vector store
   search: the store's files are attached; answer with ranked passages
-  (`[{"file": "a.txt", "score": 0.9, "text": "..."}]`). Requests answered within
+  (`[{"file": "a.txt", "score": 0.9, "text": "..."}]`). Realtime sessions
+  are conversations you sit in (they become active, tools work as in a
+  chat); a voice turn wants `reply 'transcript' -a answer.wav`. Requests answered within
   85 s keep their real HTTP status; later ones arrive as 200 with the body.
 - **Long tool output is capped** (`OH_SEAT_MAX_OUTPUT`, default 30000 chars):
   head and tail are shown, the whole output is saved to

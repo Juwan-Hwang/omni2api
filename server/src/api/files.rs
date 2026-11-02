@@ -119,7 +119,7 @@ pub async fn public(Path(id): Path<String>) -> Response {
     }
 }
 
-fn meta(id: &str, f: &StoredFile) -> Value {
+pub fn meta(id: &str, f: &StoredFile) -> Value {
     // One object both SDK families accept: OpenAI's FileObject fields and
     // Anthropic's FileMetadata fields side by side.
     let created = chrono::DateTime::from_timestamp(f.created_at, 0)

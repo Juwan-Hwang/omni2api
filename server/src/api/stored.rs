@@ -105,6 +105,17 @@ pub fn done_running(id: &str) {
     running().lock().unwrap().remove(id);
 }
 
+/// Stop a background run; false when it already ended.
+pub fn abort_running(id: &str) -> bool {
+    match take_running(id) {
+        Some(h) => {
+            h.abort();
+            true
+        }
+        None => false,
+    }
+}
+
 fn take_running(id: &str) -> Option<tokio::task::AbortHandle> {
     running().lock().unwrap().remove(id)
 }

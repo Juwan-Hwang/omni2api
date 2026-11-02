@@ -94,7 +94,9 @@ What the server does for whoever sits in the seat:
   `store: true` can be listed, retrieved, re-tagged, deleted, and their
   messages read. The Conversations API (`conv_` ids, items, `conversation`
   on Responses) shares `/v1/conversations` with this server's own history
-  (`cnv_` ids, responder key). In memory, per key.
+  (`cnv_` ids, responder key). `/v1/uploads` (parts into a file) and
+  `/v1/batches` (each JSONL line runs through the endpoint it names, four
+  at a time; output and error files, cancel). In memory, per key.
 
 ## Quick start
 

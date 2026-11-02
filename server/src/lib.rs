@@ -177,6 +177,19 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/v1/embeddings",
             post(api::embeddings::embeddings).layer(axum::extract::DefaultBodyLimit::disable()),
         )
+        .route("/v1/uploads", post(api::uploads::create))
+        .route(
+            "/v1/uploads/:id/parts",
+            post(api::uploads::add_part).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route("/v1/uploads/:id/complete", post(api::uploads::complete))
+        .route("/v1/uploads/:id/cancel", post(api::uploads::cancel))
+        .route(
+            "/v1/batches",
+            post(api::batches::create).get(api::batches::list),
+        )
+        .route("/v1/batches/:id", get(api::batches::retrieve))
+        .route("/v1/batches/:id/cancel", post(api::batches::cancel))
         .route("/v1/completions", post(api::completions::completions))
         .route("/v1/v1/completions", post(api::completions::completions))
         .route(

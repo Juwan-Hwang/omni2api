@@ -1487,7 +1487,7 @@ dependencies = [
 
 [[package]]
 name = "omni2api-server"
-version = "0.1.14"
+version = "0.1.15"
 dependencies = [
  "anyhow",
  "anyllm_translate",

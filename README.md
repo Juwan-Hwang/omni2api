@@ -117,6 +117,31 @@ What the server does for whoever sits in the seat:
   python graders answered by the seat; `/v1/fine_tuning/alpha/graders` run
   and validate.
 
+- **Libraries.** Custom voices and voice consents (used by
+  `/v1/audio/speech`), skills with versions and content, video characters.
+- **Realtime extras.** Input audio transcription in realtime sessions,
+  `/v1/realtime/transcription_sessions` and translation sessions over
+  WebSocket with their client secrets.
+- **Agents API (beta).** Agents, sessions with an event stream (SSE),
+  turns and items, function tools answered with `tool_result` events,
+  cancel; environments with files, templates, vaults and credentials (never
+  echoed back), automations (cron or once) with invocations, pause and
+  resume. A session is one conversation of the seat's.
+- **ChatKit.** `/v1/chatkit/sessions` and threads, plus the ChatKit server
+  protocol at `POST /v1/chatkit` (create, add message, retry, list, update,
+  delete, feedback), streamed the way ChatKit clients expect.
+- **Webhooks.** `/v1/webhook_endpoints` (rotate secret, test) and
+  `/v1/webhook_event_types`; status changes of jobs (videos, batches,
+  responses, fine-tuning, evals) are delivered signed per Standard Webhooks,
+  so the SDKs' `webhooks.unwrap` verifies them, with retries.
+- **Decisions and provenance.** `/v1/decisions` (the seat answers each
+  question; probabilities checked) and `/v1/content_provenance_checks`
+  (C2PA manifest check, and files the seat made are recognized).
+- **Not offered (501).** Organization and admin, projects, safety,
+  `/v1/live`, and SIP/WebRTC realtime calls: they need an OpenAI account
+  behind them, so they answer `501` with an OpenAI-style error rather than
+  pretending.
+
 ## Quick start
 
 By hand it is three commands:

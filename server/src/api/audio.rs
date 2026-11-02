@@ -61,7 +61,7 @@ pub async fn speech(
     else {
         return task::invalid("input is required");
     };
-    let voice = match b.get("voice") {
+    let voice_id = match b.get("voice") {
         Some(Value::String(v)) if !v.trim().is_empty() => v.trim().to_string(),
         Some(Value::Object(o)) => o
             .get("id")
@@ -69,6 +69,24 @@ pub async fn speech(
             .unwrap_or("custom")
             .to_string(),
         _ => return task::invalid("voice is required"),
+    };
+    // A custom voice: speak like its sample (attached) or its description.
+    let mut voice_files = Vec::new();
+    let mut voice_note = None;
+    let voice = match crate::api::library::voice_for_speech(&principal.agent.id, &voice_id) {
+        Some((name, prompt, sample)) => {
+            if let Some(s) = sample {
+                voice_files.push(s);
+                voice_note = Some("sound like the attached voice sample".to_string());
+            } else if let Some(p) = prompt {
+                voice_note = Some(format!("the voice: {p}"));
+            }
+            name
+        }
+        None if voice_id.starts_with("voice_") => {
+            return task::invalid(&format!("No voice found with id '{voice_id}'."))
+        }
+        None => voice_id,
     };
     let format = str_field(&b, "response_format")
         .unwrap_or_else(|| "mp3".into())
@@ -94,6 +112,9 @@ pub async fn speech(
     );
     if let Some(i) = str_field(&b, "instructions") {
         expected.push_str(&format!("; how to speak: {i}"));
+    }
+    if let Some(n) = voice_note {
+        expected.push_str(&format!("; {n}"));
     }
     let tokens = (input.chars().count() as u64).div_ceil(4);
     let finish: task::Finish = Box::new(move |answer| {
@@ -161,7 +182,7 @@ pub async fn speech(
         "audio.speech",
         model.as_deref(),
         input,
-        Vec::new(),
+        voice_files,
         expected,
         true,
         Value::Null,

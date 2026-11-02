@@ -16,6 +16,7 @@ pub mod evals;
 pub mod files;
 pub mod history;
 pub mod images;
+pub mod library;
 pub mod mock;
 pub mod moderations;
 pub mod openai;

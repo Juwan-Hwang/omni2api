@@ -64,7 +64,7 @@ async fn read_body(
         let file_name = f.file_name().map(String::from);
         let mime = f.content_type().map(String::from);
         let bytes = f.bytes().await.map_err(|e| e.to_string())?;
-        if name == "input_reference" && file_name.is_some() {
+        if file_name.is_some() {
             let fname = file_name.unwrap_or_else(|| "reference".into());
             let mime = crate::api::files::sniff_mime(&bytes)
                 .map(String::from)
@@ -75,6 +75,7 @@ async fn read_body(
                 Some(&fname),
                 &crate::openai_compat::b64_encode(&bytes),
             ));
+            fields.insert(format!("{name}__file"), json!(true));
         } else {
             fields.insert(
                 name,
@@ -97,6 +98,7 @@ fn start(
     size: String,
     attach: Vec<String>,
     remixed_from: Option<String>,
+    work: Option<&str>,
 ) -> Value {
     let id = format!("video_{}", uuid::Uuid::now_v7().simple());
     let now = chrono::Utc::now().timestamp();
@@ -126,7 +128,9 @@ fn start(
             history: Vec::new(),
         },
     );
-    let what = if remixed_from.is_some() {
+    let what = if let Some(w) = work {
+        w
+    } else if remixed_from.is_some() {
         "remix the attached video as the message says"
     } else if attach.is_empty() {
         "make the video the message describes"
@@ -244,6 +248,7 @@ pub async fn create(
         s("size").unwrap_or_else(|| "720x1280".into()),
         reference.into_iter().collect(),
         None,
+        None,
     );
     Json(obj).into_response()
 }
@@ -281,6 +286,7 @@ pub async fn remix(
         o["size"].as_str().unwrap_or("720x1280").to_string(),
         vec![url],
         Some(id),
+        None,
     );
     Json(obj).into_response()
 }
@@ -369,4 +375,151 @@ pub async fn list(principal: AuthPrincipal, Query(q): Query<ListQuery>) -> Respo
     let id_of = |x: Option<&Value>| x.and_then(|v| v.get("id")).cloned().unwrap_or(Value::Null);
     Json(json!({"object": "list", "data": items, "first_id": id_of(items.first()), "last_id": id_of(items.last()), "has_more": has_more}))
         .into_response()
+}
+
+/// The source video of an edit or extension: an uploaded file, or a
+/// completed video by id (`video[id]`, `{"video": {"id"}}`).
+#[allow(clippy::result_large_err)] // the error is the HTTP response itself
+fn source_video(
+    owner: &str,
+    b: &Value,
+    file: Option<String>,
+) -> Result<(String, Option<Value>), Response> {
+    if b.get("video__file").is_some() {
+        if let Some(f) = file {
+            return Ok((f, None));
+        }
+    }
+    let id = b
+        .pointer("/video/id")
+        .or_else(|| b.get("video[id]"))
+        .or_else(|| b.get("video_id"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let Some(src) = get_video(owner, &id) else {
+        return Err(stored::not_found("video", &id));
+    };
+    let Some(v) = src.input.iter().find(|f| f["name"] == "video") else {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "the source video is not completed",
+        ));
+    };
+    let url = crate::openai_compat::named_data_url(
+        v["mime"].as_str().unwrap_or("video/mp4"),
+        Some("source.mp4"),
+        v["b64"].as_str().unwrap_or(""),
+    );
+    Ok((url, Some(src.obj)))
+}
+
+async fn derive(
+    app: AppState,
+    principal: AuthPrincipal,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+    extend: bool,
+) -> Response {
+    let (b, file) = match read_body(&headers, body).await {
+        Ok(r) => r,
+        Err(e) => return err(StatusCode::BAD_REQUEST, &e),
+    };
+    let Some(prompt) = b.get("prompt").and_then(|v| v.as_str()).map(String::from) else {
+        return err(StatusCode::BAD_REQUEST, "prompt is required");
+    };
+    let (url, src) = match source_video(&principal.agent.id, &b, file) {
+        Ok(r) => r,
+        Err(r) => return r,
+    };
+    let s = |k: &str, d: &str| {
+        b.get(k)
+            .map(|v| {
+                v.as_str()
+                    .map(String::from)
+                    .unwrap_or_else(|| v.to_string())
+            })
+            .or_else(|| src.as_ref().and_then(|o| o[k].as_str().map(String::from)))
+            .unwrap_or_else(|| d.to_string())
+    };
+    let work = if extend {
+        "continue the attached video as the message says (attach the whole extended video)"
+    } else {
+        "edit the attached video as the message says"
+    };
+    let from = src
+        .as_ref()
+        .and_then(|o| o["id"].as_str().map(String::from));
+    let obj = start(
+        app,
+        principal,
+        headers,
+        prompt,
+        s("model", "sora-2"),
+        s("seconds", "4"),
+        s("size", "720x1280"),
+        vec![url],
+        from,
+        Some(work),
+    );
+    Json(obj).into_response()
+}
+
+/// `POST /v1/videos/edits`
+pub async fn edits(
+    State(app): State<AppState>,
+    principal: AuthPrincipal,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    derive(app, principal, headers, body, false).await
+}
+
+/// `POST /v1/videos/extensions`
+pub async fn extensions(
+    State(app): State<AppState>,
+    principal: AuthPrincipal,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    derive(app, principal, headers, body, true).await
+}
+
+/// `POST /v1/videos/characters`: a named character from a video, kept for
+/// later prompts (stored as given).
+pub async fn create_character(
+    principal: AuthPrincipal,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let (b, file) = match read_body(&headers, body).await {
+        Ok(r) => r,
+        Err(e) => return err(StatusCode::BAD_REQUEST, &e),
+    };
+    let Some(name) = b.get("name").and_then(|v| v.as_str()).map(String::from) else {
+        return err(StatusCode::BAD_REQUEST, "name is required");
+    };
+    if file.is_none() {
+        return err(StatusCode::BAD_REQUEST, "video (a file) is required");
+    }
+    let id = format!("char_{}", uuid::Uuid::now_v7().simple());
+    let obj = json!({"id": id, "object": "video.character", "created_at": chrono::Utc::now().timestamp(), "name": name});
+    stored::put(
+        &id,
+        Stored {
+            owner: principal.agent.id.clone(),
+            obj: obj.clone(),
+            input: file.into_iter().map(|f| json!({"url": f})).collect(),
+            history: Vec::new(),
+        },
+    );
+    Json(obj).into_response()
+}
+
+/// `GET /v1/videos/characters/:id`
+pub async fn get_character(principal: AuthPrincipal, Path(id): Path<String>) -> Response {
+    match stored::get(&principal.agent.id, &id).filter(|s| s.obj["object"] == "video.character") {
+        Some(s) => Json(s.obj).into_response(),
+        None => stored::not_found("character", &id),
+    }
 }

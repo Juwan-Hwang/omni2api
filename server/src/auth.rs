@@ -99,7 +99,8 @@ pub async fn require_api_key(
         || path.starts_with("/v1/evals")
         || path.starts_with("/v1/fine_tuning")
         || path.starts_with("/v1/assistants")
-        || path.starts_with("/v1/threads");
+        || path.starts_with("/v1/threads")
+        || path.starts_with("/v1/skills");
     // Shared by OpenAI Conversations (caller) and history (responder):
     // the handlers check which side a request is on.
     let shared = path == "/v1/conversations" || path.starts_with("/v1/conversations/");

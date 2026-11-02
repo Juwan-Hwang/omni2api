@@ -237,12 +237,35 @@ pub fn build_router(state: AppState) -> Router {
             get(api::videos::retrieve).delete(api::videos::delete),
         )
         .route("/v1/videos/:id/content", get(api::videos::content))
+        .route(
+            "/v1/videos/edits",
+            post(api::videos::edits).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/v1/videos/extensions",
+            post(api::videos::extensions).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/v1/videos/characters",
+            post(api::videos::create_character).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route("/v1/videos/characters/:id", get(api::videos::get_character))
         .route("/v1/videos/:id/remix", post(api::videos::remix))
         .route(
             "/v1/realtime/client_secrets",
             post(api::realtime::client_secrets),
         )
         .route("/v1/realtime/sessions", post(api::realtime::client_secrets))
+        .route(
+            "/v1/realtime/transcription_sessions",
+            post(api::realtime::transcription_sessions),
+        )
+        .route(
+            "/v1/realtime/translations/client_secrets",
+            post(api::realtime::translation_client_secrets),
+        )
+        .route("/v1/realtime/calls", post(api::realtime::calls))
+        .route("/v1/realtime/calls/:id/:action", post(api::realtime::calls))
         .route(
             "/v1/containers",
             post(api::containers::create).get(api::containers::list),
@@ -400,6 +423,55 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/v1/moderations",
             post(api::moderations::moderations).layer(axum::extract::DefaultBodyLimit::disable()),
         )
+        .route(
+            "/v1/audio/voices",
+            post(api::library::create_voice)
+                .get(api::library::list_voices)
+                .layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/v1/audio/voices/:id",
+            get(api::library::get_voice).delete(api::library::delete_voice),
+        )
+        .route(
+            "/v1/audio/voice_consents",
+            post(api::library::create_consent)
+                .get(api::library::list_consents)
+                .layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/v1/audio/voice_consents/:id",
+            get(api::library::get_consent)
+                .post(api::library::update_consent)
+                .delete(api::library::delete_consent),
+        )
+        .route(
+            "/v1/skills",
+            post(api::library::create_skill)
+                .get(api::library::list_skills)
+                .layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/v1/skills/:id",
+            get(api::library::retrieve_skill)
+                .post(api::library::update_skill)
+                .delete(api::library::delete_skill),
+        )
+        .route("/v1/skills/:id/content", get(api::library::skill_content))
+        .route(
+            "/v1/skills/:id/versions",
+            post(api::library::create_version)
+                .get(api::library::list_versions)
+                .layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/v1/skills/:id/versions/:version",
+            get(api::library::get_version).delete(api::library::delete_version),
+        )
+        .route(
+            "/v1/skills/:id/versions/:version/content",
+            get(api::library::version_content),
+        )
         .route("/v1/audio/speech", post(api::audio::speech))
         .route("/v1/v1/audio/speech", post(api::audio::speech))
         .route(
@@ -510,6 +582,10 @@ pub fn build_router(state: AppState) -> Router {
         // Realtime authenticates itself: browsers send the key as a
         // WebSocket subprotocol, which no header middleware sees.
         .route("/v1/realtime", get(api::realtime::realtime))
+        .route(
+            "/v1/realtime/translations",
+            get(api::realtime::translations),
+        )
         .route("/v1/v1/realtime", get(api::realtime::realtime))
         .route("/ws", get(ws::ws_handler));
 

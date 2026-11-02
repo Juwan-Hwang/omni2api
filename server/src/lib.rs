@@ -135,7 +135,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/v1/files/:file_id/content", get(api::files::content))
         .route("/v1/models", get(list_models))
-        .route("/v1/models/:model_id", get(get_model))
+        .route("/v1/models/:model_id", get(get_model).delete(delete_model))
         // A base URL configured as `.../v1` by a client that appends `/v1`
         // itself (Copilot's Anthropic provider, several SDKs) lands here.
         .route(
@@ -259,6 +259,59 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/v1/containers/:id/files/:file_id/content",
             get(api::containers::file_content),
+        )
+        .route(
+            "/v1/fine_tuning/jobs",
+            post(api::evals::create_job).get(api::evals::list_jobs),
+        )
+        .route("/v1/fine_tuning/jobs/:id", get(api::evals::get_job_route))
+        .route(
+            "/v1/fine_tuning/jobs/:id/events",
+            get(api::evals::job_events),
+        )
+        .route(
+            "/v1/fine_tuning/jobs/:id/checkpoints",
+            get(api::evals::job_checkpoints),
+        )
+        .route(
+            "/v1/fine_tuning/jobs/:id/:action",
+            post(api::evals::job_action),
+        )
+        .route(
+            "/v1/fine_tuning/alpha/graders/run",
+            post(api::evals::graders_run),
+        )
+        .route(
+            "/v1/fine_tuning/alpha/graders/validate",
+            post(api::evals::graders_validate),
+        )
+        .route(
+            "/v1/evals",
+            post(api::evals::create_eval).get(api::evals::list_evals),
+        )
+        .route(
+            "/v1/evals/:id",
+            get(api::evals::get_eval_route)
+                .post(api::evals::update_eval)
+                .delete(api::evals::delete_eval),
+        )
+        .route(
+            "/v1/evals/:id/runs",
+            post(api::evals::create_run).get(api::evals::list_runs),
+        )
+        .route(
+            "/v1/evals/:id/runs/:run_id",
+            get(api::evals::get_run_route)
+                .post(api::evals::cancel_run)
+                .delete(api::evals::delete_run),
+        )
+        .route(
+            "/v1/evals/:id/runs/:run_id/output_items",
+            get(api::evals::list_output_items),
+        )
+        .route(
+            "/v1/evals/:id/runs/:run_id/output_items/:item_id",
+            get(api::evals::get_output_item),
         )
         .route("/v1/uploads", post(api::uploads::create))
         .route(
@@ -481,15 +534,44 @@ fn model_object(app: &AppState) -> serde_json::Value {
 
 async fn list_models(
     axum::extract::State(app): axum::extract::State<AppState>,
+    principal: crate::auth::AuthPrincipal,
 ) -> axum::Json<serde_json::Value> {
     let name = app.model.get();
+    // The instance's own name, then this key's fine-tuned models.
+    let mut data = vec![model_object(&app)];
+    data.extend(api::evals::fine_tuned_models(&principal.agent.id));
+    let last = data
+        .last()
+        .and_then(|m| m.get("id"))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
     axum::Json(serde_json::json!({
         "object": "list",
-        "data": [model_object(&app)],
+        "data": data,
         "has_more": false,
         "first_id": name,
-        "last_id": name,
+        "last_id": last,
     }))
+}
+
+/// `DELETE /v1/models/:id`: a fine-tuned model goes with its job's name.
+async fn delete_model(
+    principal: crate::auth::AuthPrincipal,
+    axum::extract::Path(model_id): axum::extract::Path<String>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let jobs = api::stored::list(&principal.agent.id, "fine_tuning.job");
+    match jobs
+        .into_iter()
+        .find(|(_, s)| s.obj["fine_tuned_model"] == serde_json::json!(model_id))
+    {
+        Some((id, _)) => {
+            api::stored::update(&id, |s| s.obj["fine_tuned_model"] = serde_json::Value::Null);
+            axum::Json(serde_json::json!({"id": model_id, "object": "model", "deleted": true}))
+                .into_response()
+        }
+        None => api::stored::not_found("fine-tuned model", &model_id),
+    }
 }
 
 /// `GET /v1/models/:id` — every model name reaches the same responder, so

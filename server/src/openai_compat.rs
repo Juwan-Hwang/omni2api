@@ -312,6 +312,7 @@ pub fn guess_mime(name: &str) -> &'static str {
         "md" => "text/markdown",
         "csv" => "text/csv",
         "json" => "application/json",
+        "jsonl" => "application/jsonl",
         "html" | "htm" => "text/html",
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",

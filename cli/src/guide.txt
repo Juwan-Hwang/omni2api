@@ -75,8 +75,9 @@ alongside is optional; without -c it answers the newest task waiting for a
 file); text alone is a refusal the caller sees as an error. Text tasks (a
 transcript, vectors, a moderation verdict): `oh-seat reply -c ID '...'` (or
 -f FILE) in the format the line asks; a malformed answer is refused with the
-reason, so fix it and reply again. With no chat active, a bare reply answers
-the newest waiting task.
+reason, so fix it and reply again. When no chat waits for an answer (none
+active, or the active one already answered), a bare reply answers the
+newest waiting task.
 
 AUX lines (titles, suggestions) say the exact format to answer in and never
 take over the active conversation: answer them with `reply -c ID '...'`.

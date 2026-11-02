@@ -82,7 +82,7 @@ oh-seat reply 'Done.' --next          # answer, then wait for the next message
   at reply time with the reason, so fix and reply again. Moderations: the
   inputs arrive as `inputs.json` (pictures attached); answer per input with
   the categories it violates (`[[], ["violence"]]`) or scores. With no chat
-  active, a bare `reply` answers the newest waiting task. Vector store
+  waiting for an answer, a bare `reply` answers the newest waiting task. Vector store
   search: the store's files are attached; answer with ranked passages
   (`[{"file": "a.txt", "score": 0.9, "text": "..."}]`). Realtime sessions
   are conversations you sit in (they become active, tools work as in a

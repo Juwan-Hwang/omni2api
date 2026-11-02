@@ -104,7 +104,14 @@ What the server does for whoever sits in the seat:
   `/v1/batches` (each JSONL line runs through the endpoint it names, four
   at a time; output and error files, cancel). `/v1/vector_stores` with
   files, file batches and content; search is a seat task (the store's files
-  attached, ranked passages back, checked). In memory, per key.
+  attached, ranked passages back, checked). `/v1/containers` and their
+  files. In memory, per key.
+- **Fine-tuning, evals, graders.** A fine-tuning job hands the training
+  file to the seat and succeeds with an `ft:` model (events, checkpoints,
+  listed in `/v1/models`, deletable). Evals sample each row through the
+  seat and grade it: `string_check` and `text_similarity` here, model and
+  python graders answered by the seat; `/v1/fine_tuning/alpha/graders` run
+  and validate.
 
 ## Quick start
 

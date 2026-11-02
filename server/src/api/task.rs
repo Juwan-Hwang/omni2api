@@ -243,6 +243,7 @@ pub fn check_reply(api: &str, spec: &Value, text: &str) -> Result<(), String> {
         "embeddings" => crate::api::embeddings::parse_vectors(text, spec).map(|_| ()),
         "moderations" => crate::api::moderations::parse_verdicts(text, spec).map(|_| ()),
         "vector_stores.search" => crate::api::vector_stores::parse_hits(text, spec).map(|_| ()),
+        "graders" => crate::api::evals::check_grade(text, spec),
         _ => Ok(()),
     }
 }

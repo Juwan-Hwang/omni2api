@@ -127,8 +127,66 @@ fn types_of(b: &Value) -> Result<Vec<String>, Response> {
     Ok(out)
 }
 
-fn valid_url(u: &str) -> bool {
-    u.starts_with("https://") || u.starts_with("http://")
+/// Webhook targets point the server's own egress anywhere a caller names.
+/// Keep them out of the server's network: public http(s) hosts only, no
+/// credentials in the URL, no loopback/private/link-local IP literals or
+/// localhost names. A hostname that *resolves* to an internal address still
+/// gets through (DNS is not resolved here); deployments on sensitive
+/// networks should additionally pin egress at the proxy/firewall level.
+/// Delivery follows no redirects, so a public URL cannot 302 inward.
+pub fn valid_url(u: &str) -> bool {
+    let (scheme, rest) = u
+        .split_once("://")
+        .map(|(a, b)| (a.to_ascii_lowercase(), b))
+        .unwrap_or_default();
+    if scheme != "https" && scheme != "http" {
+        return false;
+    }
+    if rest.contains('@') {
+        return false; // userinfo
+    }
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = if let Some(inner) = authority
+        .strip_prefix('[')
+        .and_then(|a| a.split(']').next())
+    {
+        inner.to_ascii_lowercase()
+    } else {
+        authority
+            .split(':')
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase()
+    };
+    if host.is_empty()
+        || host == "localhost"
+        || host.ends_with(".localhost")
+        || host.ends_with(".local")
+        || host.ends_with(".internal")
+    {
+        return false;
+    }
+    if let Ok(ip) = host.parse::<std::net::Ipv4Addr>() {
+        let o = ip.octets();
+        let private = ip.is_loopback()
+            || ip.is_unspecified()
+            || ip.is_link_local()
+            || o[0] == 0
+            || o[0] == 10
+            || (o[0] == 172 && (16..=31).contains(&o[1]))
+            || (o[0] == 192 && o[1] == 168)
+            || (o[0] == 169 && o[1] == 254)
+            || o[0] >= 224; // multicast/reserved
+        return !private;
+    }
+    if let Ok(ip) = host.parse::<std::net::Ipv6Addr>() {
+        let seg = ip.segments();
+        return !(ip.is_loopback()
+            || ip.is_unspecified()
+            || seg[0] & 0xffc0 == 0xfe80 // link-local
+            || seg[0] & 0xfe00 == 0xfc00); // unique-local
+    }
+    true
 }
 
 /// The endpoint as shown; the secret stays in `history[0]`.
@@ -153,7 +211,7 @@ pub async fn create(principal: AuthPrincipal, Json(b): Json<Value>) -> Response 
         return err("name is required");
     };
     let Some(url) = b["url"].as_str().filter(|u| valid_url(u)) else {
-        return err("url must be an http(s) URL");
+        return err("url must be a public http(s) URL (no credentials, no loopback/private hosts)");
     };
     let id = format!("we_{}", uuid::Uuid::now_v7().simple());
     let secret = new_secret();
@@ -298,7 +356,12 @@ async fn deliver(url: &str, secrets: &[String], ev: &Value) -> Result<u16, Strin
         .map(|s| sign(s, &id, ts, &body))
         .collect::<Vec<_>>()
         .join(" ");
-    let r = reqwest::Client::new()
+    // No redirects: a public target must not bounce delivery to an address
+    // valid_url would have rejected.
+    let r = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| e.to_string())?
         .post(url)
         .header("content-type", "application/json")
         .header("webhook-id", &id)

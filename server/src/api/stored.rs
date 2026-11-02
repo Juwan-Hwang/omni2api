@@ -44,6 +44,13 @@ fn running() -> &'static Mutex<HashMap<String, tokio::task::AbortHandle>> {
     R.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// True when an object with this id exists, whatever its owner. Create
+/// paths that accept a caller-chosen id must check this first: the map is
+/// keyed by id alone, so a second `put` would silently replace the object.
+pub fn exists(id: &str) -> bool {
+    store().lock().unwrap().0.contains_key(id)
+}
+
 pub fn put(id: &str, s: Stored) {
     let mut g = store().lock().unwrap();
     let event =
@@ -222,25 +229,30 @@ fn page(items: Vec<Value>, q: &ListQuery, default_order: &str) -> Value {
 // ── Responses ──
 
 pub async fn get_response(principal: AuthPrincipal, Path(id): Path<String>) -> Response {
-    match get(&principal.agent.id, &id) {
+    match get(&principal.agent.id, &id).filter(|s| s.obj["object"] == "response") {
         Some(s) => Json(s.obj).into_response(),
         None => not_found("response", &id),
     }
 }
 
 pub async fn delete_response(principal: AuthPrincipal, Path(id): Path<String>) -> Response {
+    // Ownership and type first: aborting another owner's running task is as
+    // much a breach as deleting its object.
+    if get(&principal.agent.id, &id)
+        .filter(|s| s.obj["object"] == "response")
+        .is_none()
+    {
+        return not_found("response", &id);
+    }
     if let Some(h) = take_running(&id) {
         h.abort();
     }
-    if remove(&principal.agent.id, &id) {
-        Json(json!({"id": id, "object": "response", "deleted": true})).into_response()
-    } else {
-        not_found("response", &id)
-    }
+    remove(&principal.agent.id, &id);
+    Json(json!({"id": id, "object": "response", "deleted": true})).into_response()
 }
 
 pub async fn cancel_response(principal: AuthPrincipal, Path(id): Path<String>) -> Response {
-    let Some(s) = get(&principal.agent.id, &id) else {
+    let Some(s) = get(&principal.agent.id, &id).filter(|s| s.obj["object"] == "response") else {
         return not_found("response", &id);
     };
     if s.obj.get("background").and_then(|b| b.as_bool()) != Some(true) {
@@ -267,7 +279,7 @@ pub async fn response_input_items(
     Path(id): Path<String>,
     Query(q): Query<ListQuery>,
 ) -> Response {
-    match get(&principal.agent.id, &id) {
+    match get(&principal.agent.id, &id).filter(|s| s.obj["object"] == "response") {
         // Newest first by default, as OpenAI lists input items.
         Some(s) => Json(page(s.input, &q, "desc")).into_response(),
         None => not_found("response", &id),

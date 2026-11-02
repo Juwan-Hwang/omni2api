@@ -1143,6 +1143,14 @@ pub async fn create_environment(principal: AuthPrincipal, Json(b): Json<Value>) 
     if env["type"] == "none" {
         return bad("environment.type must be openai_hosted or self_hosted");
     }
+    // A caller-chosen environment_id must never name an existing object: the
+    // stored-object map is keyed by id alone, so a reused id would silently
+    // overwrite the other object, whatever its type and owner.
+    if let Some(id) = env["id"].as_str() {
+        if stored::exists(id) {
+            return err(StatusCode::CONFLICT, "environment_id is already in use");
+        }
+    }
     let obj = json!({"id": env["id"], "object": "agent.environment", "type": env["type"],
         "status": "ready", "files": env.get("files").cloned().unwrap_or(json!([])),
         "plugins": env.get("plugins").cloned().unwrap_or(json!([])),

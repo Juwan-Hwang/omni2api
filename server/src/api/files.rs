@@ -194,6 +194,16 @@ pub async fn upload(principal: AuthPrincipal, mut mp: Multipart) -> Response {
                 .into_response(),
         }
     }
+    // `output` marks seat-made files served on the anonymous download route;
+    // letting a caller set it would hand out public URLs for arbitrary
+    // uploaded content. Only server-side `put` callers may use it.
+    if purpose == OUTPUT_PURPOSE {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": {"message": format!("purpose \"{OUTPUT_PURPOSE}\" is reserved for files the seat produces"), "type": "invalid_request_error"}})),
+        )
+            .into_response();
+    }
     let Some((filename, mime, bytes)) = file else {
         return (
             StatusCode::BAD_REQUEST,

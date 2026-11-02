@@ -387,6 +387,14 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/projects/*rest", any(api::task::not_offered))
         .route("/v1/safety/*rest", any(api::task::not_offered))
         .route("/v1/live/*rest", any(api::task::not_offered))
+        .route(
+            "/v1/fine_tuning/checkpoints/:ckpt/permissions",
+            post(api::evals::create_permissions).get(api::evals::list_permissions),
+        )
+        .route(
+            "/v1/fine_tuning/checkpoints/:ckpt/permissions/:id",
+            delete(api::evals::delete_permission),
+        )
         // The Agents API (beta).
         .route(
             "/v1/agents",

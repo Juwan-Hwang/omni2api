@@ -986,6 +986,86 @@ pub fn fine_tuned_models(owner: &str) -> Vec<Value> {
         .collect()
 }
 
+// ── checkpoint permissions ──
+
+fn perms() -> &'static std::sync::Mutex<std::collections::HashMap<(String, String), Vec<Value>>> {
+    static P: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<(String, String), Vec<Value>>>,
+    > = std::sync::OnceLock::new();
+    P.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn perm_page(v: Vec<Value>) -> Value {
+    let id = |x: Option<&Value>| x.map(|v| v["id"].clone()).unwrap_or(Value::Null);
+    json!({"object": "list", "data": v, "first_id": id(v.first()), "last_id": id(v.last()), "has_more": false})
+}
+
+/// `POST /v1/fine_tuning/checkpoints/:ckpt/permissions`: share with projects.
+pub async fn create_permissions(
+    principal: AuthPrincipal,
+    Path(ckpt): Path<String>,
+    Json(b): Json<Value>,
+) -> Response {
+    let Some(projects) = b["project_ids"].as_array().filter(|a| !a.is_empty()) else {
+        return err(StatusCode::BAD_REQUEST, "project_ids is required");
+    };
+    let mut made = Vec::new();
+    let mut g = perms().lock().unwrap();
+    let list = g.entry((principal.agent.id.clone(), ckpt)).or_default();
+    for p in projects {
+        let Some(p) = p.as_str() else {
+            return err(StatusCode::BAD_REQUEST, "project_ids must be strings");
+        };
+        if list.iter().any(|x| x["project_id"] == json!(p)) {
+            continue;
+        }
+        let x = json!({"id": format!("cp_{}", uuid::Uuid::now_v7().simple()), "object": "checkpoint.permission",
+            "created_at": now(), "project_id": p});
+        list.push(x.clone());
+        made.push(x);
+    }
+    Json(perm_page(made)).into_response()
+}
+
+#[derive(Debug, serde::Deserialize, Default)]
+pub struct PermQuery {
+    #[serde(default)]
+    project_id: Option<String>,
+}
+
+/// `GET /v1/fine_tuning/checkpoints/:ckpt/permissions`
+pub async fn list_permissions(
+    principal: AuthPrincipal,
+    Path(ckpt): Path<String>,
+    Query(q): Query<PermQuery>,
+) -> Response {
+    let mut v = perms()
+        .lock()
+        .unwrap()
+        .get(&(principal.agent.id.clone(), ckpt))
+        .cloned()
+        .unwrap_or_default();
+    if let Some(p) = &q.project_id {
+        v.retain(|x| x["project_id"] == json!(p));
+    }
+    Json(perm_page(v)).into_response()
+}
+
+/// `DELETE /v1/fine_tuning/checkpoints/:ckpt/permissions/:id`
+pub async fn delete_permission(
+    principal: AuthPrincipal,
+    Path((ckpt, id)): Path<(String, String)>,
+) -> Response {
+    let mut g = perms().lock().unwrap();
+    let list = g.entry((principal.agent.id.clone(), ckpt)).or_default();
+    let before = list.len();
+    list.retain(|x| x["id"] != json!(id));
+    if list.len() == before {
+        return stored::not_found("checkpoint permission", &id);
+    }
+    Json(json!({"id": id, "object": "checkpoint.permission", "deleted": true})).into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

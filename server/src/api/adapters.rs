@@ -616,6 +616,19 @@ pub(crate) fn responses_to_chat(body: &Value) -> Value {
                         // assistant turn on the chat wire.
                         messages.push(json!({"role": role, "content": content}));
                     }
+                    // A compaction this server made: the summary stands in
+                    // for the turns it replaced.
+                    "compaction" => {
+                        if let Some(summary) = it
+                            .get("encrypted_content")
+                            .and_then(|v| v.as_str())
+                            .and_then(decode_compaction)
+                        {
+                            // A user turn, so a seat meeting the conversation
+                            // fresh is shown it with the message after it.
+                            messages.push(json!({"role": "user", "content": format!("[summary of the conversation so far]\n{summary}")}));
+                        }
+                    }
                     "function_call" | "custom_tool_call" | "local_shell_call" => {
                         let call_id = it
                             .get("call_id")
@@ -1470,6 +1483,141 @@ pub async fn responses(
         .header("X-Accel-Buffering", "no")
         .body(Body::from_stream(out))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+const COMPACTION_PREFIX: &str = "o2a1:";
+
+fn encode_compaction(summary: &str) -> String {
+    format!(
+        "{COMPACTION_PREFIX}{}",
+        crate::openai_compat::b64_encode(summary.as_bytes())
+    )
+}
+
+fn decode_compaction(s: &str) -> Option<String> {
+    let b = crate::openai_compat::b64_decode(s.strip_prefix(COMPACTION_PREFIX)?)?;
+    String::from_utf8(b).ok()
+}
+
+/// `POST /v1/responses/compact`: the seat summarizes the conversation;
+/// the answer keeps every user message and one compaction item holding the
+/// summary, which later requests send back in place of the history.
+pub async fn responses_compact(
+    State(app): State<AppState>,
+    principal: AuthPrincipal,
+    headers: HeaderMap,
+    Json(mut body): Json<Value>,
+) -> Response {
+    let mut items = crate::api::stored::input_items(body.get("input"));
+    if let Some(prev) = body.get("previous_response_id").and_then(|v| v.as_str()) {
+        let Some(s) = crate::api::stored::get(&principal.agent.id, prev) else {
+            return responses_error(
+                StatusCode::NOT_FOUND,
+                &format!("Previous response with id '{prev}' not found."),
+            );
+        };
+        let mut all = s.history;
+        all.extend(items);
+        items = all;
+        body["input"] = Value::Array(items.clone());
+    }
+    if items.is_empty() {
+        return responses_error(StatusCode::BAD_REQUEST, "input is required");
+    }
+    // The conversation as the seat would read it.
+    let chat =
+        responses_to_chat(&json!({"input": items, "instructions": body.get("instructions")}));
+    let transcript: Vec<String> = chat["messages"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .map(|m| {
+            let mut t = format!(
+                "[{}] {}",
+                m["role"].as_str().unwrap_or("?"),
+                value_text(&m["content"])
+            );
+            if let Some(calls) = m.get("tool_calls").and_then(|c| c.as_array()) {
+                for c in calls {
+                    t.push_str(&format!(
+                        "\n  call {}({})",
+                        c.pointer("/function/name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(""),
+                        c.pointer("/function/arguments")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                    ));
+                }
+            }
+            t
+        })
+        .collect();
+    let text = transcript.join("\n\n");
+    let file = crate::openai_compat::named_data_url(
+        "text/plain",
+        Some("conversation.txt"),
+        &crate::openai_compat::b64_encode(text.as_bytes()),
+    );
+    let user_msgs: Vec<Value> = items
+        .iter()
+        .filter(|i| i["type"] == "message" && i["role"] == "user")
+        .cloned()
+        .collect();
+    let model = body.get("model").and_then(|v| v.as_str()).map(String::from);
+    let input_tokens = (text.chars().count() as u64).div_ceil(4);
+    let finish: crate::api::task::Finish = Box::new(move |answer| {
+        let summary = match answer {
+            Ok(a) if !a.raw.trim().is_empty() => a.raw.trim().to_string(),
+            Ok(_) => "the seat returned an empty summary".to_string(),
+            Err(e) => {
+                return crate::api::task::Finished::Json(
+                    StatusCode::GATEWAY_TIMEOUT,
+                    json!({"error": {"message": e, "type": "server_error", "code": "seat_unavailable"}}),
+                )
+            }
+        };
+        let out_tokens = (summary.chars().count() as u64).div_ceil(4);
+        let mut output = crate::api::stored::with_ids(user_msgs, "msg");
+        output.push(json!({
+            "id": format!("cmp_{}", Uuid::now_v7().simple()),
+            "type": "compaction",
+            "encrypted_content": encode_compaction(&summary),
+            "created_by": "omni2api",
+        }));
+        crate::api::task::Finished::Json(
+            StatusCode::OK,
+            json!({
+                "id": format!("resp_{}", Uuid::now_v7().simple()),
+                "object": "response.compaction",
+                "created_at": chrono::Utc::now().timestamp(),
+                "output": output,
+                "usage": {
+                    "input_tokens": input_tokens,
+                    "input_tokens_details": {"cached_tokens": 0},
+                    "output_tokens": out_tokens,
+                    "output_tokens_details": {"reasoning_tokens": 0},
+                    "total_tokens": input_tokens + out_tokens,
+                },
+            }),
+        )
+    });
+    crate::api::task::run(
+        app,
+        principal,
+        headers,
+        "responses.compact",
+        model.as_deref(),
+        "Compact the attached conversation.".to_string(),
+        vec![file],
+        "write a summary of the attached conversation that lets you carry on from it (goals, decisions, state of the work, open threads, key facts); answer with the summary text alone".to_string(),
+        false,
+        Value::Null,
+        crate::api::task::Delivery::Json,
+        finish,
+    )
+    .await
 }
 
 /// `POST /v1/responses/input_tokens`: what a Responses request would cost

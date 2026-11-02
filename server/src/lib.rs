@@ -108,6 +108,11 @@ pub fn build_router(state: AppState) -> Router {
             post(api::adapters::responses).layer(axum::extract::DefaultBodyLimit::disable()),
         )
         .route(
+            "/v1/responses/compact",
+            post(api::adapters::responses_compact)
+                .layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
             "/v1/responses/input_tokens",
             post(api::adapters::responses_input_tokens),
         )
@@ -304,6 +309,10 @@ pub fn build_router(state: AppState) -> Router {
             get(api::evals::get_run_route)
                 .post(api::evals::cancel_run)
                 .delete(api::evals::delete_run),
+        )
+        .route(
+            "/v1/evals/:id/runs/:run_id/cancel",
+            post(api::evals::cancel_run),
         )
         .route(
             "/v1/evals/:id/runs/:run_id/output_items",

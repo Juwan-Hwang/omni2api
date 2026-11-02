@@ -96,7 +96,8 @@ What the server does for whoever sits in the seat:
   for voice the seat attaches its spoken answer with the transcript as text.
 - **Stored objects.** Responses are kept (`store`, default on):
   `previous_response_id`, `background` with polling and cancel, retrieve,
-  delete, `input_items`, `input_tokens`. Chat completions with
+  delete, `input_items`, `input_tokens`, `compact` (the seat writes the
+  summary; the compaction item stands in for the history afterwards). Chat completions with
   `store: true` can be listed, retrieved, re-tagged, deleted, and their
   messages read. The Conversations API (`conv_` ids, items, `conversation`
   on Responses) shares `/v1/conversations` with this server's own history

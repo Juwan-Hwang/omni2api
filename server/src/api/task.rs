@@ -393,7 +393,17 @@ pub async fn fetch(o: &Output) -> Option<(String, Vec<u8>)> {
     match o {
         Output::Bytes { mime, bytes, .. } => Some((mime.clone(), bytes.clone())),
         Output::Link(u) => {
-            let r = reqwest::Client::new()
+            // The seat names the URL but the server fetches it: same policy
+            // as webhook targets (public hosts only, no redirects), plus a
+            // hard size cap so a link cannot exhaust memory.
+            const MAX: usize = 64 * 1024 * 1024;
+            if !crate::api::webhooks::valid_url(u) {
+                return None;
+            }
+            let r = reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .ok()?
                 .get(u)
                 .timeout(Duration::from_secs(60))
                 .send()
@@ -402,12 +412,23 @@ pub async fn fetch(o: &Output) -> Option<(String, Vec<u8>)> {
             if !r.status().is_success() {
                 return None;
             }
+            if r.content_length().is_some_and(|n| n as usize > MAX) {
+                return None;
+            }
             let ct = r
                 .headers()
                 .get("content-type")
                 .and_then(|v| v.to_str().ok())
                 .map(|s| s.split(';').next().unwrap_or("").trim().to_string());
-            let b = r.bytes().await.ok()?.to_vec();
+            let mut b = Vec::new();
+            let mut stream = r.bytes_stream();
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk.ok()?;
+                if b.len() + chunk.len() > MAX {
+                    return None;
+                }
+                b.extend_from_slice(&chunk);
+            }
             let mime = crate::api::files::sniff_mime(&b)
                 .map(String::from)
                 .or(ct)

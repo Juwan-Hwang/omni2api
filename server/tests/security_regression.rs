@@ -297,12 +297,9 @@ async fn repro_delete_response_aborts_cross_owner() {
 
     // Poll both responses: the control completes; the aborted one is stuck queued.
     let mut control_status = String::new();
-    let mut attack_status = String::new();
     for _ in 0..20 {
         let (_, c) = get(&addr, Some(KEY_A), &format!("/v1/responses/{control_id}")).await;
-        let (_, a) = get(&addr, Some(KEY_A), &format!("/v1/responses/{resp_id}")).await;
         control_status = c["status"].as_str().unwrap_or("?").to_string();
-        attack_status = a["status"].as_str().unwrap_or("?").to_string();
         if control_status == "completed" {
             break;
         }
@@ -311,7 +308,7 @@ async fn repro_delete_response_aborts_cross_owner() {
     // Give the (dead) attack task a moment it will never use.
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     let (_, a) = get(&addr, Some(KEY_A), &format!("/v1/responses/{resp_id}")).await;
-    attack_status = a["status"].as_str().unwrap_or("?").to_string();
+    let attack_status = a["status"].as_str().unwrap_or("?").to_string();
     println!("[AUDIT] control status={control_status}; attack status={attack_status}");
     assert_eq!(
         control_status, "completed",

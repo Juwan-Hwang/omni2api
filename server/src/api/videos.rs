@@ -141,6 +141,8 @@ fn start(
         "{seconds}s video, {size}: {what} and attach it: `oh-seat reply -a out.mp4` (a picture attached too becomes its thumbnail); text alone is a refusal"
     );
     let vid = id.clone();
+    let file_owner = principal.agent.id.clone();
+    let file_stem = id.clone();
     let finish: task::Finish = Box::new(move |answer| {
         let now = chrono::Utc::now().timestamp();
         let mut video = None;
@@ -177,7 +179,19 @@ fn start(
                 s.obj["progress"] = json!(100);
                 s.obj["completed_at"] = json!(now);
                 s.obj["expires_at"] = json!(now + 86400);
-                let keep = |name: &str, (mime, bytes): (String, Vec<u8>)| json!({"name": name, "mime": mime, "b64": crate::openai_compat::b64_encode(&bytes)});
+                // Assets go to the files store (byte-capped per owner);
+                // the stored object keeps only the reference.
+                let keep = |name: &str, (mime, bytes): (String, Vec<u8>)| {
+                    let fid = crate::api::files::put(crate::api::files::StoredFile {
+                        owner: file_owner.clone(),
+                        filename: format!("{file_stem}_{name}"),
+                        mime: mime.clone(),
+                        purpose: crate::api::files::OUTPUT_PURPOSE.to_string(),
+                        bytes,
+                        created_at: now,
+                    });
+                    json!({"name": name, "mime": mime, "file_id": fid})
+                };
                 s.input = video
                     .clone()
                     .map(|v| keep("video", v))
@@ -270,11 +284,14 @@ pub async fn remix(
     let Some(prompt) = b.get("prompt").and_then(|v| v.as_str()).map(String::from) else {
         return err(StatusCode::BAD_REQUEST, "prompt is required");
     };
-    let url = crate::openai_compat::named_data_url(
-        v["mime"].as_str().unwrap_or("video/mp4"),
-        Some("source.mp4"),
-        v["b64"].as_str().unwrap_or(""),
-    );
+    let url = match v["file_id"].as_str().and_then(crate::api::files::data_url) {
+        Some(u) => u,
+        None => crate::openai_compat::named_data_url(
+            v["mime"].as_str().unwrap_or("video/mp4"),
+            Some("source.mp4"),
+            v["b64"].as_str().unwrap_or(""),
+        ),
+    };
     let o = &src.obj;
     let obj = start(
         app,
@@ -328,6 +345,19 @@ pub async fn content(
     };
     match s.input.iter().find(|f| f["name"] == want) {
         Some(f) => {
+            if let Some(fid) = f["file_id"].as_str() {
+                return match crate::api::files::get(fid) {
+                    Some(file) => (
+                        [(header::CONTENT_TYPE, file.mime.clone())],
+                        file.bytes.clone(),
+                    )
+                        .into_response(),
+                    None => err(
+                        StatusCode::NOT_FOUND,
+                        "the file is gone (byte cap eviction)",
+                    ),
+                };
+            }
             let bytes = crate::openai_compat::b64_decode(f["b64"].as_str().unwrap_or(""))
                 .unwrap_or_default();
             (

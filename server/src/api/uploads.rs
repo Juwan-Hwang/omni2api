@@ -24,6 +24,13 @@ struct Upload {
     file: Option<Value>,
 }
 
+/// Incomplete uploads expire an hour after creation; sweep them at every
+/// entry point so stale uploads and their parts cannot pile up.
+fn sweep(g: &mut HashMap<String, Upload>) {
+    let now = chrono::Utc::now().timestamp();
+    g.retain(|_, u| u.created_at + 3600 > now);
+}
+
 fn uploads() -> &'static Mutex<HashMap<String, Upload>> {
     static U: OnceLock<Mutex<HashMap<String, Upload>>> = OnceLock::new();
     U.get_or_init(|| Mutex::new(HashMap::new()))
@@ -75,7 +82,10 @@ pub async fn create(principal: AuthPrincipal, Json(b): Json<Value>) -> Response 
         file: None,
     };
     let o = obj(&id, &u);
-    uploads().lock().unwrap().insert(id, u);
+    let mut g = uploads().lock().unwrap();
+    sweep(&mut g);
+    g.insert(id, u);
+    drop(g);
     Json(o).into_response()
 }
 
@@ -101,6 +111,7 @@ pub async fn add_part(
         );
     };
     let mut g = uploads().lock().unwrap();
+    sweep(&mut g);
     let Some(u) = g.get_mut(&id).filter(|u| u.owner == principal.agent.id) else {
         return err(
             StatusCode::NOT_FOUND,
@@ -132,6 +143,7 @@ pub async fn complete(
         })
         .unwrap_or_default();
     let mut g = uploads().lock().unwrap();
+    sweep(&mut g);
     let Some(u) = g.get_mut(&id).filter(|u| u.owner == principal.agent.id) else {
         return err(
             StatusCode::NOT_FOUND,
@@ -176,6 +188,7 @@ pub async fn complete(
 /// `POST /v1/uploads/:id/cancel`
 pub async fn cancel(principal: AuthPrincipal, Path(id): Path<String>) -> Response {
     let mut g = uploads().lock().unwrap();
+    sweep(&mut g);
     let Some(u) = g.get_mut(&id).filter(|u| u.owner == principal.agent.id) else {
         return err(
             StatusCode::NOT_FOUND,

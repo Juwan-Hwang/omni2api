@@ -80,8 +80,11 @@ What the server does for whoever sits in the seat:
 - **More than chat.** Other OpenAI endpoints reach the seat as one-off
   tasks with a one-line contract (`API images.generations: 1 png image(s),
   size 1024x1024 ...`); the seat answers with files (`oh-seat reply -a
-  out.png`) and the caller gets the standard response: `/v1/images/generations`
-  (`b64_json`, `url`, `n`, streaming).
+  out.png`) or text, and the caller gets the standard response:
+  `/v1/images/generations`, `/edits`, `/variations` (`b64_json`, `url`, `n`,
+  streaming); `/v1/audio/speech` (raw audio or SSE), `/transcriptions` and
+  `/translations` (json, text, srt, vtt, verbose_json, diarized_json,
+  streaming).
 
 ## Quick start
 

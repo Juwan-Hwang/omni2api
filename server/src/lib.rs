@@ -33,13 +33,15 @@ use crate::storage::AppState;
 /// Agent requests routinely reach hundreds of KB (system prompts + tool
 /// schemas + replayed history), so the cap is generous — its job is to
 /// stop absurd payloads from pinning memory, not to police normal traffic.
+/// Media rides here too (images to edit, a seat's generated pictures and
+/// audio as base64), hence 64 MiB.
 /// Overridable via `OMNI2API_MAX_BODY_BYTES`.
 fn max_body_bytes() -> usize {
     std::env::var("OMNI2API_MAX_BODY_BYTES")
         .ok()
         .and_then(|v| v.trim().parse::<usize>().ok())
         .filter(|v| *v > 0)
-        .unwrap_or(8 * 1024 * 1024)
+        .unwrap_or(64 * 1024 * 1024)
 }
 
 /// Maximum concurrent in-flight requests.
@@ -116,6 +118,40 @@ pub fn build_router(state: AppState) -> Router {
         // answers (see `api/task.rs`).
         .route("/v1/images/generations", post(api::images::generations))
         .route("/v1/v1/images/generations", post(api::images::generations))
+        .route(
+            "/v1/images/edits",
+            post(api::images::edits).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/v1/v1/images/edits",
+            post(api::images::edits).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route("/v1/audio/speech", post(api::audio::speech))
+        .route("/v1/v1/audio/speech", post(api::audio::speech))
+        .route(
+            "/v1/audio/transcriptions",
+            post(api::audio::transcriptions).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/v1/v1/audio/transcriptions",
+            post(api::audio::transcriptions).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/v1/audio/translations",
+            post(api::audio::translations).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/v1/v1/audio/translations",
+            post(api::audio::translations).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/v1/images/variations",
+            post(api::images::variations).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/v1/v1/images/variations",
+            post(api::images::variations).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
         // Companion to async mode: poll for a human's reply without
         // holding the original request open.
         // axum 0.7 path-parameter syntax is `:name` — `{name}` would be
@@ -155,7 +191,11 @@ pub fn build_router(state: AppState) -> Router {
         // cannot hold a WebSocket (see `seat.rs`).
         .route("/v1/seat/inbox", get(seat::inbox))
         .route("/v1/seat/send", post(seat::send))
-        .route("/v1/seat/reply", post(seat::reply))
+        // Attachments (a generated picture, audio) are base64 in the body.
+        .route(
+            "/v1/seat/reply",
+            post(seat::reply).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
         .route("/v1/seat/tool-call", post(seat::tool_call))
         .route("/v1/seat/capabilities", get(seat::capabilities))
         .route("/v1/seat/history", get(seat::history))

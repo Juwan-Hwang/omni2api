@@ -19,6 +19,8 @@ use crate::storage::AppState;
 
 /// What the seat sent back for a task.
 pub struct Answer {
+    /// The reply exactly as the seat sent it (a transcript keeps its links).
+    pub raw: String,
     /// The reply text with attachment ids, data URLs and links removed.
     pub text: String,
     /// Files, in the order the seat gave them.
@@ -103,6 +105,7 @@ pub async fn run(
     text: String,
     images: Vec<String>,
     expected: String,
+    wants_files: bool,
     delivery: Delivery,
     finish: Finish,
 ) -> Response {
@@ -119,7 +122,7 @@ pub async fn run(
         "model": model,
         "messages": [{"role": "user", "content": content}],
         "stream": false,
-        "metadata": {crate::api::openai::TASK_KEY: {"api": api, "expected": expected}},
+        "metadata": {crate::api::openai::TASK_KEY: {"api": api, "expected": expected, "files": wants_files}},
     });
     let req = match serde_json::from_value(req) {
         Ok(r) => r,
@@ -329,6 +332,7 @@ pub fn parse_answer(content: &str) -> Answer {
     // Markdown wrappers left around a removed image: `![alt]()`.
     let text = text.replace("![](", "").replace("]()", "]");
     Answer {
+        raw: content.to_string(),
         text: text.trim().to_string(),
         files,
     }

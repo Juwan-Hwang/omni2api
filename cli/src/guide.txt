@@ -69,10 +69,11 @@ IMAGES the caller attached are saved as files and their paths printed
 (`image: ...`): open them with your own image/file tool.
 
 API lines are one request to another OpenAI endpoint (images, audio...):
-the line says what to send back. Make it with your own tools, then answer
-with the file(s): `oh-seat reply -a out.png` (one -a per file; text
-alongside is optional; without -c it answers the newest waiting task).
-Text alone is a refusal the caller sees as an error.
+the line says what to send back. File tasks (a picture, speech): make it
+with your own tools, then `oh-seat reply -a out.png` (one -a per file; text
+alongside is optional; without -c it answers the newest task waiting for a
+file); text alone is a refusal the caller sees as an error. Text tasks (a
+transcript): a plain `oh-seat reply -c ID '...'` in the format the line asks.
 
 AUX lines (titles, suggestions) say the exact format to answer in and never
 take over the active conversation: answer them with `reply -c ID '...'`.

@@ -665,7 +665,8 @@ impl Ctx {
             info.last = s(e, "text").unwrap_or("").chars().take(100).collect();
             info.t = now_secs();
             info.aux = aux_hint(e).is_some();
-            info.api = s(e, "kind") == Some("api");
+            info.api = s(e, "kind") == Some("api")
+                && e.get("wants_files").and_then(|v| v.as_bool()) != Some(false);
             // A new message opens a new turn: older calls are settled.
             self.st.pending.retain(|p| p[1] != c);
         }
@@ -940,9 +941,9 @@ fn print_event(e: &Value) {
     match s(e, "type").unwrap_or("event") {
         "message.received" => {
             let mut h = format!("MESSAGE conv={c} client={}", s(e, "client").unwrap_or("?"));
-            if let (Some("api"), Some(a)) = (s(e, "kind"), aux_hint(e)) {
+            if let (Some("api"), Some(f)) = (s(e, "kind"), s(e, "expected_format")) {
                 let api = s(e, "api").unwrap_or("api");
-                h.push_str(&format!("  API {api}: {a}; reply with -c {c}"));
+                h.push_str(&format!("  API {api}: {f}; reply with -c {c}"));
             } else if let Some(a) = aux_hint(e) {
                 h.push_str(&format!("  AUX: {a}; reply with -c {c}"));
             }
@@ -1270,7 +1271,8 @@ fn cmd_reply(
             .ok_or_else(|| {
                 Fail(
                     USAGE,
-                    "no API task waiting for a file (pass -c CONV)".into(),
+                    "no API task waiting for a file (a text task takes a plain reply -c CONV)"
+                        .into(),
                 )
             })?,
         conv => cx.conv(conv)?,

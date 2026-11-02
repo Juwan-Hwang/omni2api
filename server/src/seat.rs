@@ -379,8 +379,10 @@ fn render(cursor: u64, ev: &Value, full: bool) -> Value {
                 out["client"] = req.get("client").cloned().unwrap_or(Value::Null);
                 let kind = req.get("kind").cloned().unwrap_or(Value::Null);
                 if matches!(kind.as_str(), Some("auxiliary") | Some("api")) {
-                    if let Some(api) = req.get("api").filter(|v| !v.is_null()) {
-                        out["api"] = api.clone();
+                    for k in ["api", "wants_files"] {
+                        if let Some(v) = req.get(k).filter(|v| !v.is_null()) {
+                            out[k] = v.clone();
+                        }
                     }
                     for k in [
                         "expected_format",
@@ -875,12 +877,20 @@ pub async fn reply(
     }
     let mut b = b;
     if !b.attachments.is_empty() {
-        if crate::session::task_api(&b.conversation_id).is_none() {
-            return err(
+        match crate::session::task_api(&b.conversation_id) {
+            None => return err(
                 StatusCode::BAD_REQUEST,
                 "not_a_task",
                 "attachments answer API tasks (images, audio...); a chat conversation takes text",
-            );
+            ),
+            Some((api, false)) => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "text_task",
+                    &format!("{api} answers with text, not files"),
+                )
+            }
+            Some(_) => {}
         }
         let mut ids = Vec::new();
         for (i, a) in b.attachments.iter().enumerate() {

@@ -1417,10 +1417,11 @@ pub async fn chat_completions(
     let mut info = request_info(&req, &profile, system_prompt.as_deref(), auxiliary);
     info["client"] = Value::String(client_name.clone());
     info["prompt_tokens"] = json!(prompt_tokens);
-    if let Some((api, expected)) = &task {
+    if let Some((api, expected, files)) = &task {
         info["kind"] = json!("api");
         info["api"] = json!(api);
         info["expected_format"] = json!(expected);
+        info["wants_files"] = json!(files);
     }
     for msg in &mut inbound_messages {
         if msg.metadata.contains_key("raw_tail") {
@@ -1437,7 +1438,7 @@ pub async fn chat_completions(
     // An API task (an image, a transcript...) is one request, one answer:
     // a conversation of its own, so two at once never race for a reply.
     let session_key = match &task {
-        Some((api, _)) => format!("task:{}:{}", api, uuid::Uuid::new_v4().simple()),
+        Some((api, _, _)) => format!("task:{}:{}", api, uuid::Uuid::new_v4().simple()),
         None => resolve_session_key(&headers, &req, system_prompt.as_deref(), auxiliary),
     };
     let fallback_key = session_key.starts_with("prm:") || session_key.starts_with("cli:");
@@ -1549,8 +1550,8 @@ pub async fn chat_completions(
             for msg in &inbound_messages {
                 app.message.insert(msg.clone()).await;
             }
-            if let Some((api, _)) = &task {
-                crate::session::mark_task(&cnv.id, api);
+            if let Some((api, _, files)) = &task {
+                crate::session::mark_task(&cnv.id, api, *files);
             }
             cnv.id
         };
@@ -1942,7 +1943,7 @@ pub(crate) const TASK_KEY: &str = "omni2api_task";
 
 /// The API task a request carries: its endpoint name and the answer
 /// contract shown to the seat.
-fn task_of(req: &ChatCompletionRequest) -> Option<(String, String)> {
+fn task_of(req: &ChatCompletionRequest) -> Option<(String, String, bool)> {
     let t = req.metadata.as_ref()?.get(TASK_KEY)?;
     let api = t.get("api")?.as_str()?.to_string();
     let expected = t
@@ -1950,7 +1951,8 @@ fn task_of(req: &ChatCompletionRequest) -> Option<(String, String)> {
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    Some((api, expected))
+    let files = t.get("files").and_then(|v| v.as_bool()).unwrap_or(false);
+    Some((api, expected, files))
 }
 
 /// Whether the caller asked for asynchronous delivery.

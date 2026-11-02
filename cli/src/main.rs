@@ -256,6 +256,9 @@ struct ConvInfo {
     /// answer with a file.
     #[serde(default)]
     api: bool,
+    /// The latest message was an API task of any kind, not answered yet.
+    #[serde(default)]
+    task: bool,
 }
 
 fn home() -> PathBuf {
@@ -665,6 +668,7 @@ impl Ctx {
             info.last = s(e, "text").unwrap_or("").chars().take(100).collect();
             info.t = now_secs();
             info.aux = aux_hint(e).is_some();
+            info.task = s(e, "kind") == Some("api");
             info.api = s(e, "kind") == Some("api")
                 && e.get("wants_files").and_then(|v| v.as_bool()) != Some(false);
             // A new message opens a new turn: older calls are settled.
@@ -1275,6 +1279,16 @@ fn cmd_reply(
                         .into(),
                 )
             })?,
+        // No chat to answer: a bare reply answers the newest waiting task.
+        None if cx.st.active.is_none() => cx
+            .st
+            .convs
+            .iter()
+            .filter(|(_, i)| i.task)
+            .max_by_key(|(_, i)| i.t)
+            .map(|(k, _)| k.clone())
+            .map(Ok)
+            .unwrap_or_else(|| cx.conv(None))?,
         conv => cx.conv(conv)?,
     };
     // Ending the turn while a call is out loses the reply: it rides along
@@ -1350,10 +1364,9 @@ fn cmd_reply(
         body["reasoning"] = json!(r);
     }
     let r = cx.call("POST", "/v1/seat/reply", Some(body), 120)?;
-    if !attach.is_empty() {
-        if let Some(i) = cx.st.convs.get_mut(&c) {
-            i.api = false;
-        }
+    if let Some(i) = cx.st.convs.get_mut(&c).filter(|i| i.task) {
+        i.api = false;
+        i.task = false;
         cx.save();
     }
     if cx.json {

@@ -11,6 +11,7 @@ pub mod files;
 pub mod history;
 pub mod images;
 pub mod mock;
+pub mod moderations;
 pub mod openai;
 pub mod replies;
 pub mod task;

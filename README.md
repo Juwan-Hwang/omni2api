@@ -85,7 +85,8 @@ What the server does for whoever sits in the seat:
   streaming); `/v1/audio/speech` (raw audio or SSE), `/transcriptions` and
   `/translations` (json, text, srt, vtt, verbose_json, diarized_json,
   streaming); `/v1/embeddings` (the seat sends vectors, checked before they
-  reach the caller; `dimensions`, float or base64).
+  reach the caller; `dimensions`, float or base64); `/v1/moderations`
+  (text and image inputs, the seat names the categories).
 
 ## Quick start
 

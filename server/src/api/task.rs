@@ -239,6 +239,7 @@ fn finished_response(f: Finished) -> Response {
 pub fn check_reply(api: &str, spec: &Value, text: &str) -> Result<(), String> {
     match api {
         "embeddings" => crate::api::embeddings::parse_vectors(text, spec).map(|_| ()),
+        "moderations" => crate::api::moderations::parse_verdicts(text, spec).map(|_| ()),
         _ => Ok(()),
     }
 }

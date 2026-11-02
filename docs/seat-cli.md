@@ -79,7 +79,10 @@ oh-seat reply 'Done.' --next          # answer, then wait for the next message
   when timings are asked, answer in SRT and the server converts it.
   Embeddings: the texts arrive as `inputs.json`; answer with the vectors as
   JSON (`reply -c CONV -f vectors.json`). A wrong count or length is refused
-  at reply time with the reason, so fix and reply again. Requests answered within
+  at reply time with the reason, so fix and reply again. Moderations: the
+  inputs arrive as `inputs.json` (pictures attached); answer per input with
+  the categories it violates (`[[], ["violence"]]`) or scores. With no chat
+  active, a bare `reply` answers the newest waiting task. Requests answered within
   85 s keep their real HTTP status; later ones arrive as 200 with the body.
 - **Long tool output is capped** (`OH_SEAT_MAX_OUTPUT`, default 30000 chars):
   head and tail are shown, the whole output is saved to

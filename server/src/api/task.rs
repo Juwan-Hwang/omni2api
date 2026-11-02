@@ -106,6 +106,7 @@ pub async fn run(
     images: Vec<String>,
     expected: String,
     wants_files: bool,
+    spec: Value,
     delivery: Delivery,
     finish: Finish,
 ) -> Response {
@@ -122,7 +123,7 @@ pub async fn run(
         "model": model,
         "messages": [{"role": "user", "content": content}],
         "stream": false,
-        "metadata": {crate::api::openai::TASK_KEY: {"api": api, "expected": expected, "files": wants_files}},
+        "metadata": {crate::api::openai::TASK_KEY: {"api": api, "expected": expected, "files": wants_files, "spec": spec}},
     });
     let req = match serde_json::from_value(req) {
         Ok(r) => r,
@@ -229,6 +230,16 @@ fn finished_response(f: Finished) -> Response {
             .header("Content-Type", "text/event-stream")
             .body(Body::from(frames.concat()))
             .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()),
+    }
+}
+
+/// Check a seat's reply against its task's spec before it is delivered, so
+/// a malformed answer is refused to the seat (which can fix it) instead of
+/// reaching the caller.
+pub fn check_reply(api: &str, spec: &Value, text: &str) -> Result<(), String> {
+    match api {
+        "embeddings" => crate::api::embeddings::parse_vectors(text, spec).map(|_| ()),
+        _ => Ok(()),
     }
 }
 

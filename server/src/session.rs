@@ -548,27 +548,53 @@ pub fn count_request_tokens(
 
 // ── API tasks ──
 
-/// Conversations opened by a non-chat endpoint (an image, a transcript...),
-/// by their endpoint name. Only these take attachments as the answer.
-fn tasks() -> &'static Mutex<HashMap<String, (String, bool)>> {
-    static T: std::sync::OnceLock<Mutex<HashMap<String, (String, bool)>>> =
-        std::sync::OnceLock::new();
+struct TaskInfo {
+    api: String,
+    files: bool,
+    /// What a valid answer looks like (an embeddings task: how many vectors
+    /// of what length), checked when the seat replies.
+    spec: Value,
+}
+
+/// Conversations opened by a non-chat endpoint (an image, a transcript...).
+fn tasks() -> &'static Mutex<HashMap<String, TaskInfo>> {
+    static T: std::sync::OnceLock<Mutex<HashMap<String, TaskInfo>>> = std::sync::OnceLock::new();
     T.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// `files`: whether the answer is files (a picture) or text (a transcript).
-pub fn mark_task(conversation_id: &str, api: &str, files: bool) {
+pub fn mark_task(conversation_id: &str, api: &str, files: bool, spec: Value) {
     let mut g = tasks().lock().unwrap();
     // Bounded: a task is answered once and never looked up again.
     if g.len() > 10_000 {
         g.clear();
     }
-    g.insert(conversation_id.to_string(), (api.to_string(), files));
+    g.insert(
+        conversation_id.to_string(),
+        TaskInfo {
+            api: api.to_string(),
+            files,
+            spec,
+        },
+    );
 }
 
 /// The endpoint a task conversation answers and whether it takes files.
 pub fn task_api(conversation_id: &str) -> Option<(String, bool)> {
-    tasks().lock().unwrap().get(conversation_id).cloned()
+    tasks()
+        .lock()
+        .unwrap()
+        .get(conversation_id)
+        .map(|t| (t.api.clone(), t.files))
+}
+
+/// The endpoint and answer spec of a task conversation.
+pub fn task_spec(conversation_id: &str) -> Option<(String, Value)> {
+    tasks()
+        .lock()
+        .unwrap()
+        .get(conversation_id)
+        .map(|t| (t.api.clone(), t.spec.clone()))
 }
 
 #[cfg(test)]

@@ -84,7 +84,8 @@ pub async fn require_api_key(
         || path.starts_with("/v1/files/")
         || path.starts_with("/v1/replies")
         || path.starts_with("/v1/images/")
-        || path.starts_with("/v1/audio/");
+        || path.starts_with("/v1/audio/")
+        || path == "/v1/embeddings";
     let allowed = if caller_route {
         principal.api_key.scope.may_call()
     } else {

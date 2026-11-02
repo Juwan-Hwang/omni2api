@@ -164,6 +164,7 @@ pub async fn speech(
         Vec::new(),
         expected,
         true,
+        Value::Null,
         if sse { Delivery::Sse } else { Delivery::Json },
         finish,
     )
@@ -516,6 +517,7 @@ async fn transcribe(
         vec![file],
         what,
         false,
+        Value::Null,
         if stream {
             Delivery::Sse
         } else {

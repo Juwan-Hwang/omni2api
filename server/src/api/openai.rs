@@ -1551,7 +1551,13 @@ pub async fn chat_completions(
                 app.message.insert(msg.clone()).await;
             }
             if let Some((api, _, files)) = &task {
-                crate::session::mark_task(&cnv.id, api, *files);
+                let spec = req
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| m.pointer(&format!("/{TASK_KEY}/spec")))
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                crate::session::mark_task(&cnv.id, api, *files, spec);
             }
             cnv.id
         };

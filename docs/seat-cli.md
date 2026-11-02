@@ -76,7 +76,10 @@ oh-seat reply 'Done.' --next          # answer, then wait for the next message
   and answer with `reply -a FILE` (repeat `-a` for several; without `-c` it
   goes to the newest task waiting for a file); text alone is a refusal the
   caller gets as an error. Text tasks (transcriptions): a plain `reply -c`;
-  when timings are asked, answer in SRT and the server converts it. Requests answered within
+  when timings are asked, answer in SRT and the server converts it.
+  Embeddings: the texts arrive as `inputs.json`; answer with the vectors as
+  JSON (`reply -c CONV -f vectors.json`). A wrong count or length is refused
+  at reply time with the reason, so fix and reply again. Requests answered within
   85 s keep their real HTTP status; later ones arrive as 200 with the body.
 - **Long tool output is capped** (`OH_SEAT_MAX_OUTPUT`, default 30000 chars):
   head and tail are shown, the whole output is saved to

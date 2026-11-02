@@ -248,6 +248,7 @@ pub async fn generations(
         Vec::new(),
         expected,
         true,
+        Value::Null,
         delivery,
         finish,
     )
@@ -402,6 +403,7 @@ pub async fn edits(
         images,
         expected,
         true,
+        Value::Null,
         delivery,
         finish,
     )
@@ -440,6 +442,7 @@ pub async fn variations(
         images.into_iter().take(1).collect(),
         expected,
         true,
+        Value::Null,
         Delivery::Json,
         finish,
     )

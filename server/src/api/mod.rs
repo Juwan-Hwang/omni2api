@@ -6,6 +6,7 @@
 
 pub mod adapters;
 pub mod audio;
+pub mod embeddings;
 pub mod files;
 pub mod history;
 pub mod images;

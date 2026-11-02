@@ -940,6 +940,11 @@ pub async fn reply(
         }
         b.text = text;
     }
+    if let Some((api, spec)) = crate::session::task_spec(&b.conversation_id) {
+        if let Err(m) = crate::api::task::check_reply(&api, &spec, &b.text) {
+            return err(StatusCode::BAD_REQUEST, "bad_answer", &m);
+        }
+    }
     let had_waiter = app.reply.has_waiter(&b.conversation_id).await;
     if let Some(r) = &b.reasoning {
         crate::session::set_reasoning(&b.conversation_id, r);

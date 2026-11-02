@@ -134,6 +134,8 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/v1/embeddings",
             post(api::embeddings::embeddings).layer(axum::extract::DefaultBodyLimit::disable()),
         )
+        .route("/v1/completions", post(api::completions::completions))
+        .route("/v1/v1/completions", post(api::completions::completions))
         .route(
             "/v1/moderations",
             post(api::moderations::moderations).layer(axum::extract::DefaultBodyLimit::disable()),

@@ -282,7 +282,7 @@ async fn caller(app: &AppState, headers: &HeaderMap) -> Result<(AuthPrincipal, S
         ));
     };
     if key.starts_with("ck_") {
-        let (agent_id, human_id, api_key_id, scope, user) = {
+        let (agent_id, human_id, api_key_id, _minted_scope, user) = {
             let mut g = secrets().lock().unwrap();
             let Some(s) = g.get_mut(&key).filter(|s| s.expires_at > now()) else {
                 return Err(err(
@@ -306,6 +306,21 @@ async fn caller(app: &AppState, headers: &HeaderMap) -> Result<(AuthPrincipal, S
                 s.scope,
                 s.user.clone(),
             )
+        };
+        // The key that minted the secret must still be live: revoking or
+        // deleting it ends its secrets now, not at their expiry. Its scope
+        // as it stands today is the one the secret acts with.
+        let live = app
+            .identity
+            .api_key_scope(&api_key_id)
+            .await
+            .filter(|s| s.may_call());
+        let Some(scope) = live else {
+            secrets().lock().unwrap().remove(&key);
+            return Err(err(
+                StatusCode::UNAUTHORIZED,
+                "The key behind this client secret was revoked",
+            ));
         };
         return match principal_of(app, &agent_id, &human_id, &api_key_id, scope).await {
             Some(p) => Ok((p, user)),

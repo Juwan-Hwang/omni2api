@@ -458,5 +458,24 @@ async fn test_pg_full_storage_chain() {
     assert!(fetched.is_some(), "Should find conversation by agent");
     assert_eq!(fetched.unwrap().id, conv.id);
 
+    // 7. A key's live scope by id: what a ChatKit client secret re-checks
+    // on every use, so revoking the key ends its secrets at once.
+    use omni2api_server::model::identity::KeyScope;
+    let live = store.api_key_scope("key_test_001").await;
+    assert!(live.is_some_and(|s| s.may_call()), "{live:?}");
+    assert_eq!(store.api_key_scope("key_missing").await, None);
+    let mut revoked = ApiKey::new(
+        "key_test_001",
+        "ohk_test_key",
+        "agt_test_001",
+        "hum_test_001",
+    );
+    revoked.scope = KeyScope::Revoked;
+    store.insert_api_key(revoked).await;
+    assert_eq!(
+        store.api_key_scope("key_test_001").await,
+        Some(KeyScope::Revoked)
+    );
+
     clean_db(&store).await;
 }

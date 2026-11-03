@@ -185,3 +185,39 @@ async fn chatkit_secret_is_rate_limited() {
     assert_eq!(s, 429, "{v}");
     assert_eq!(v["error"]["code"], "rate_limit_exceeded");
 }
+
+// A ChatKit client secret ends the moment the key that minted it is
+// revoked, not at the secret's expiry.
+#[tokio::test]
+async fn chatkit_secret_dies_with_its_key() {
+    use omni2api_server::model::identity::KeyScope;
+    use omni2api_server::storage::traits::IdentityRepository;
+    std::env::set_var("OMNI2API_BATCH_MAX_LINES", "2");
+    let store = MemoryStore::seeded();
+    let app = build_router(AppState::from_store(store.clone()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let (s, sess) = post(
+        &addr,
+        "/v1/chatkit/sessions",
+        json!({"user": "u1", "workflow": {"id": "wf_1"}}),
+    )
+    .await;
+    assert_eq!(s, 200, "{sess}");
+    let secret = sess["client_secret"].as_str().unwrap().to_string();
+    let list = json!({"type": "threads.list", "params": {"limit": 5}});
+    let (s, v) = post_as(&addr, &secret, "/v1/chatkit", list.clone()).await;
+    assert_eq!(s, 200, "live key, live secret: {v}");
+
+    let mut key = store.resolve_principal(KEY).await.unwrap().api_key;
+    key.scope = KeyScope::Revoked;
+    store.insert_api_key(key).await;
+
+    let (s, v) = post_as(&addr, &secret, "/v1/chatkit", list.clone()).await;
+    assert_eq!(s, 401, "revoked key, dead secret: {v}");
+    let (s, _) = post_as(&addr, &secret, "/v1/chatkit", list).await;
+    assert_eq!(s, 401, "and it stays dead");
+}

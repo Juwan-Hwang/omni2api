@@ -29,6 +29,19 @@ pub struct StoredFile {
 /// Only these are served without a key, at their unguessable id.
 pub const OUTPUT_PURPOSE: &str = "output";
 
+/// A caller may not claim a reserved purpose: `output` marks files the
+/// seat produced — the anonymous `/files/:id` route serves exactly those —
+/// so only server-side code may set it. Every caller-facing write path
+/// (direct upload, multipart uploads) must run this.
+pub fn check_caller_purpose(purpose: &str) -> Result<(), String> {
+    if purpose == OUTPUT_PURPOSE {
+        return Err(format!(
+            "purpose \"{OUTPUT_PURPOSE}\" is reserved for files the seat produces"
+        ));
+    }
+    Ok(())
+}
+
 /// Most bytes kept per owner; that owner's oldest files go first beyond it.
 /// `OMNI2API_FILES_MAX_BYTES_PER_OWNER` overrides.
 fn keep_bytes_per_owner() -> usize {
@@ -237,10 +250,10 @@ pub async fn upload(principal: AuthPrincipal, mut mp: Multipart) -> Response {
     // `output` marks seat-made files served on the anonymous download route;
     // letting a caller set it would hand out public URLs for arbitrary
     // uploaded content. Only server-side `put` callers may use it.
-    if purpose == OUTPUT_PURPOSE {
+    if let Err(e) = check_caller_purpose(&purpose) {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({"error": {"message": format!("purpose \"{OUTPUT_PURPOSE}\" is reserved for files the seat produces"), "type": "invalid_request_error"}})),
+            Json(json!({"error": {"message": e, "type": "invalid_request_error"}})),
         )
             .into_response();
     }

@@ -62,11 +62,28 @@ fn running() -> &'static Mutex<HashMap<String, tokio::task::AbortHandle>> {
     R.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// True when an object with this id exists, whatever its owner. Create
-/// paths that accept a caller-chosen id must check this first: the map is
-/// keyed by id alone, so a second `put` would silently replace the object.
-pub fn exists(id: &str) -> bool {
-    store().lock().unwrap().0.contains_key(id)
+/// The eviction both write paths share: the owner's own oldest objects go
+/// first (other owners untouched), then a global backstop on total count.
+fn evict(g: &mut Map, owner: &str) {
+    let mut mine =
+        g.1.iter()
+            .filter(|i| g.0.get(i.as_str()).is_some_and(|s| s.owner == owner))
+            .count();
+    while mine > max_per_owner() {
+        let Some(pos) =
+            g.1.iter()
+                .position(|i| g.0.get(i.as_str()).is_some_and(|s| s.owner == owner))
+        else {
+            break;
+        };
+        let old = g.1.remove(pos);
+        g.0.remove(&old);
+        mine -= 1;
+    }
+    while g.1.len() > max_total() {
+        let old = g.1.remove(0);
+        g.0.remove(&old);
+    }
 }
 
 pub fn put(id: &str, s: Stored) {
@@ -84,27 +101,23 @@ pub fn put(id: &str, s: Stored) {
         crate::api::webhooks::fire(&owner, kind, id);
         return;
     }
-    // The owner's own oldest objects go first; other owners are untouched.
-    let mut mine =
-        g.1.iter()
-            .filter(|i| g.0.get(i.as_str()).is_some_and(|s| s.owner == owner))
-            .count();
-    while mine > max_per_owner() {
-        let Some(pos) =
-            g.1.iter()
-                .position(|i| g.0.get(i.as_str()).is_some_and(|s| s.owner == owner))
-        else {
-            break;
-        };
-        let old = g.1.remove(pos);
-        g.0.remove(&old);
-        mine -= 1;
+    evict(&mut g, &owner);
+}
+
+/// Insert only when the id is free, atomically under one lock: the
+/// `exists` + `put` pair is a check-then-act race (two concurrent creates
+/// with the same caller-chosen id would both pass `exists`). Returns
+/// false when the id is taken; nothing is stored then.
+pub fn insert_new(id: &str, s: Stored) -> bool {
+    let mut g = store().lock().unwrap();
+    if g.0.contains_key(id) {
+        return false;
     }
-    // Global backstop: total across owners.
-    while g.1.len() > max_total() {
-        let old = g.1.remove(0);
-        g.0.remove(&old);
-    }
+    let owner = s.owner.clone();
+    g.0.insert(id.to_string(), s);
+    g.1.push(id.to_string());
+    evict(&mut g, &owner);
+    true
 }
 
 pub fn get(owner: &str, id: &str) -> Option<Stored> {

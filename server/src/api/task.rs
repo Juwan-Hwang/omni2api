@@ -400,8 +400,7 @@ pub async fn fetch(o: &Output) -> Option<(String, Vec<u8>)> {
             if !crate::api::webhooks::valid_url(u) {
                 return None;
             }
-            let r = reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
+            let r = crate::api::webhooks::egress_client()
                 .build()
                 .ok()?
                 .get(u)

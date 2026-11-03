@@ -821,7 +821,6 @@ pub async fn create_job(
         },
     );
     let jid = id.clone();
-    let tokens = (tf.bytes.len() as u64).div_ceil(4);
     let task = tokio::spawn(async move {
         stored::update(&jid, |s| {
             s.obj["status"] = json!("running");
@@ -853,37 +852,25 @@ pub async fn create_job(
         .await;
         let _ = axum::body::to_bytes(resp.into_body(), usize::MAX).await;
         let outcome = rx.await.unwrap_or_else(|_| Err("no answer".into()));
-        let metrics = "step,train_loss,train_accuracy\n1,0.0,1.0\n".to_string();
-        let mf = crate::api::files::put(crate::api::files::StoredFile {
-            owner: owner.clone(),
-            filename: "step_metrics.csv".into(),
-            mime: "text/csv".into(),
-            purpose: "fine-tune-results".into(),
-            bytes: metrics.into_bytes(),
-            created_at: now(),
-        });
         let t = now();
         stored::update(&jid, |s| match &outcome {
             Ok(note) => {
                 s.obj["status"] = json!("succeeded");
                 s.obj["fine_tuned_model"] = json!(ft_model);
                 s.obj["finished_at"] = json!(t);
-                s.obj["trained_tokens"] = json!(tokens);
-                s.obj["result_files"] = json!([mf]);
+                // Honesty: the seat read the training file — nothing was
+                // trained, so there are no real metrics. No fabricated
+                // step_metrics.csv in result_files, no invented loss curve
+                // or accuracy on a checkpoint, no trained-token count.
+                s.input.push(event(
+                    "info",
+                    "No real training metrics: the seat read the training file, nothing was trained — result files, checkpoints and trained_tokens stay empty rather than reporting invented numbers.",
+                ));
                 if !note.is_empty() {
                     s.input.push(event("info", note));
                 }
                 s.input
                     .push(event("info", "The job has successfully completed"));
-                s.history = vec![json!({
-                    "id": format!("ftckpt_{}", uuid::Uuid::now_v7().simple()),
-                    "object": "fine_tuning.job.checkpoint",
-                    "created_at": t,
-                    "fine_tuned_model_checkpoint": format!("{ft_model}:ckpt-step-1"),
-                    "fine_tuning_job_id": s.obj["id"],
-                    "step_number": 1,
-                    "metrics": {"step": 1, "train_loss": 0.0, "train_mean_token_accuracy": 1.0},
-                })];
             }
             Err(e) => {
                 s.obj["status"] = json!("failed");

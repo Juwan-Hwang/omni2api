@@ -1145,18 +1145,26 @@ pub async fn create_environment(principal: AuthPrincipal, Json(b): Json<Value>) 
     }
     // A caller-chosen environment_id must never name an existing object: the
     // stored-object map is keyed by id alone, so a reused id would silently
-    // overwrite the other object, whatever its type and owner.
-    if let Some(id) = env["id"].as_str() {
-        if stored::exists(id) {
-            return err(StatusCode::CONFLICT, "environment_id is already in use");
-        }
-    }
+    // overwrite the other object, whatever its type and owner. insert_new is
+    // the atomic check-and-insert (an exists + put pair would race).
     let obj = json!({"id": env["id"], "object": "agent.environment", "type": env["type"],
         "status": "ready", "files": env.get("files").cloned().unwrap_or(json!([])),
         "plugins": env.get("plugins").cloned().unwrap_or(json!([])),
         "skills": env.get("skills").cloned().unwrap_or(json!([])),
         "vault_ids": b.get("vault_ids").cloned().unwrap_or(json!([])), "created_at": now()});
-    let obj = put(&principal.agent.id, obj);
+    let id = obj["id"].as_str().unwrap_or("").to_string();
+    let fresh = stored::insert_new(
+        &id,
+        Stored {
+            owner: principal.agent.id.clone(),
+            obj: obj.clone(),
+            input: Vec::new(),
+            history: Vec::new(),
+        },
+    );
+    if !fresh {
+        return err(StatusCode::CONFLICT, "environment_id is already in use");
+    }
     crate::api::webhooks::fire(
         &principal.agent.id,
         "agent.environment.ready",

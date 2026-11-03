@@ -377,6 +377,18 @@ async fn transcribe(
         ));
     }
     let stream = !translate && str_field(&b, "stream").as_deref() == Some("true");
+    // Raw bodies (plain text, srt, vtt) can never share a response with
+    // keepalive padding; the JSON formats can — padding is valid leading
+    // whitespace, so they keep the slow-path hold instead of dying at the
+    // tunnel's ~100 s.
+    let delivery = if stream {
+        Delivery::Sse
+    } else {
+        match format.as_str() {
+            "text" | "srt" | "vtt" => Delivery::JsonRaw,
+            _ => Delivery::Json,
+        }
+    };
     let timed = matches!(
         format.as_str(),
         "srt" | "vtt" | "verbose_json" | "diarized_json"
@@ -543,11 +555,7 @@ async fn transcribe(
         what,
         false,
         Value::Null,
-        if stream {
-            Delivery::Sse
-        } else {
-            Delivery::JsonRaw
-        },
+        delivery,
         finish,
     )
     .await

@@ -173,17 +173,204 @@ pub async fn realtime(
     ws.on_upgrade(move |socket| run(socket, app, principal, headers, session))
 }
 
+/// Per-connection memory bounds. Each is overridable by env:
+/// `OMNI2API_REALTIME_MAX_BUFFER_BYTES` (uncommitted input audio, default
+/// 15 MiB, OpenAI's input-audio-buffer limit),
+/// `OMNI2API_REALTIME_MAX_AUDIO_BYTES` (committed audio kept for the
+/// conversation, default 64 MiB) and `OMNI2API_REALTIME_MAX_ITEMS`
+/// (conversation items, default 4096). An append, commit or item past a
+/// bound is refused with an `error` event and changes nothing; the
+/// connection stays open.
+#[derive(Clone, Copy, Debug)]
+pub struct Limits {
+    pub buffer_bytes: usize,
+    pub audio_bytes: usize,
+    pub items: usize,
+}
+
+impl Limits {
+    pub fn from_env() -> Self {
+        let get = |k: &str, d: usize| {
+            std::env::var(k)
+                .ok()
+                .and_then(|v| v.trim().parse::<usize>().ok())
+                .filter(|v| *v > 0)
+                .unwrap_or(d)
+        };
+        Limits {
+            buffer_bytes: get("OMNI2API_REALTIME_MAX_BUFFER_BYTES", 15 * 1024 * 1024),
+            audio_bytes: get("OMNI2API_REALTIME_MAX_AUDIO_BYTES", 64 * 1024 * 1024),
+            items: get("OMNI2API_REALTIME_MAX_ITEMS", 4096),
+        }
+    }
+}
+
 /// What a connection holds.
 struct Conn {
     session: Value,
     items: Vec<Value>,
-    /// Committed audio per user item id (pcm16 or the session's format).
+    /// Committed audio per user item id (pcm16; g711 input is decoded on
+    /// commit).
     audio: HashMap<String, Vec<u8>>,
+    /// Sum of `audio`'s lengths.
+    audio_bytes: usize,
     buffer: Vec<u8>,
     /// Server VAD: whether speech is under way, and quiet bytes since.
     speaking: bool,
     quiet: usize,
     running: Option<tokio::task::AbortHandle>,
+    limits: Limits,
+}
+
+impl Conn {
+    fn new(session: Value, items: Vec<Value>, limits: Limits) -> Self {
+        Conn {
+            session,
+            items,
+            audio: HashMap::new(),
+            audio_bytes: 0,
+            buffer: Vec::new(),
+            speaking: false,
+            quiet: 0,
+            running: None,
+            limits,
+        }
+    }
+}
+
+/// The session's input audio encoding.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum InFormat {
+    Pcm16,
+    Ulaw,
+    Alaw,
+}
+
+/// The negotiated input format and its sample rate. G.711 is always
+/// 8 kHz (a stale `rate` left over from a pcm format does not apply).
+fn input_format(session: &Value) -> (InFormat, u32) {
+    let f = session.pointer("/audio/input/format");
+    let ty = f
+        .and_then(|f| f.get("type"))
+        .and_then(|t| t.as_str())
+        .unwrap_or("audio/pcm");
+    match ty {
+        "audio/pcmu" | "g711_ulaw" => (InFormat::Ulaw, 8000),
+        "audio/pcma" | "g711_alaw" => (InFormat::Alaw, 8000),
+        _ => (
+            InFormat::Pcm16,
+            f.and_then(|f| f.get("rate"))
+                .and_then(|r| r.as_u64())
+                .filter(|r| *r > 0)
+                .unwrap_or(24000) as u32,
+        ),
+    }
+}
+
+/// Input bytes per millisecond of audio for the negotiated format
+/// (24 kHz pcm16: 48; G.711: 8).
+fn bytes_per_ms(session: &Value) -> usize {
+    let (fmt, rate) = input_format(session);
+    let per_sample = if fmt == InFormat::Pcm16 { 2 } else { 1 };
+    ((rate as usize * per_sample) / 1000).max(1)
+}
+
+/// G.711 mu-law sample to linear pcm16.
+fn ulaw_to_pcm(u: u8) -> i16 {
+    let u = !u;
+    let sign = u & 0x80;
+    let exp = (u >> 4) & 0x07;
+    let mant = (u & 0x0f) as i32;
+    let mag = (((mant << 3) + 0x84) << exp) - 0x84;
+    (if sign != 0 { -mag } else { mag }) as i16
+}
+
+/// G.711 A-law sample to linear pcm16.
+fn alaw_to_pcm(a: u8) -> i16 {
+    let a = a ^ 0x55;
+    let sign = a & 0x80;
+    let exp = (a >> 4) & 0x07;
+    let mant = (a & 0x0f) as i32;
+    let mag = if exp == 0 {
+        (mant << 4) + 8
+    } else {
+        ((mant << 4) + 0x108) << (exp - 1)
+    };
+    (if sign != 0 { mag } else { -mag }) as i16
+}
+
+/// Input bytes in the session's format as pcm16 little-endian.
+fn to_pcm16(fmt: InFormat, b: &[u8]) -> Vec<u8> {
+    let dec = match fmt {
+        InFormat::Pcm16 => return b.to_vec(),
+        InFormat::Ulaw => ulaw_to_pcm,
+        InFormat::Alaw => alaw_to_pcm,
+    };
+    b.iter().flat_map(|x| dec(*x).to_le_bytes()).collect()
+}
+
+/// Loudness (RMS, 0..1) of input bytes in the session's format.
+fn input_level(fmt: InFormat, b: &[u8]) -> f64 {
+    match fmt {
+        InFormat::Pcm16 => pcm_level(b),
+        _ => pcm_level(&to_pcm16(fmt, b)),
+    }
+}
+
+/// Append to the input buffer within its bound; the error event otherwise.
+fn append_audio(c: &mut Conn, b: &[u8], eid: Option<&Value>) -> Result<(), Value> {
+    if c.buffer.len() + b.len() > c.limits.buffer_bytes {
+        return Err(error_ev(
+            "invalid_request_error",
+            "input_audio_buffer_too_large",
+            &format!(
+                "the input audio buffer is limited to {} bytes; commit or clear it first",
+                c.limits.buffer_bytes
+            ),
+            eid,
+        ));
+    }
+    c.buffer.extend_from_slice(b);
+    Ok(())
+}
+
+/// Bytes of inline base64 audio an item carries (decoded size).
+fn inline_audio_len(item: &Value) -> usize {
+    item["content"]
+        .as_array()
+        .map(|parts| {
+            parts
+                .iter()
+                .filter_map(|p| p["audio"].as_str())
+                .map(|a| a.len() / 4 * 3)
+                .sum()
+        })
+        .unwrap_or(0)
+}
+
+/// Remove an item and release the audio it held; whether it existed.
+fn remove_item(c: &mut Conn, id: &str) -> bool {
+    let Some(at) = c.items.iter().position(|i| i["id"] == json!(id)) else {
+        return false;
+    };
+    let item = c.items.remove(at);
+    let freed = inline_audio_len(&item) + c.audio.remove(id).map(|a| a.len()).unwrap_or(0);
+    c.audio_bytes = c.audio_bytes.saturating_sub(freed);
+    true
+}
+
+fn items_full(c: &Conn, eid: Option<&Value>) -> Option<Value> {
+    (c.items.len() >= c.limits.items).then(|| {
+        error_ev(
+            "invalid_request_error",
+            "conversation_items_limit_exceeded",
+            &format!(
+                "the conversation is limited to {} items; delete some first",
+                c.limits.items
+            ),
+            eid,
+        )
+    })
 }
 
 async fn run(
@@ -205,15 +392,11 @@ async fn run(
             }
         }
     });
-    let conn = std::sync::Arc::new(tokio::sync::Mutex::new(Conn {
+    let conn = std::sync::Arc::new(tokio::sync::Mutex::new(Conn::new(
         session,
-        items: Vec::new(),
-        audio: HashMap::new(),
-        buffer: Vec::new(),
-        speaking: false,
-        quiet: 0,
-        running: None,
-    }));
+        Vec::new(),
+        Limits::from_env(),
+    )));
     let sid = conn.lock().await.session["id"]
         .as_str()
         .unwrap_or("")
@@ -337,11 +520,34 @@ pub fn wav_data(b: &[u8]) -> Vec<u8> {
     b.to_vec()
 }
 
-fn commit(c: &mut Conn, tx: &mpsc::UnboundedSender<Value>) -> Option<String> {
+/// Commit the input buffer as a user item. `Ok(None)` when the buffer is
+/// empty; the error event when the committed-audio or item bound would be
+/// passed (the buffer is then left as it was).
+fn commit(
+    c: &mut Conn,
+    tx: &mpsc::UnboundedSender<Value>,
+    eid: Option<&Value>,
+) -> Result<Option<String>, Value> {
     if c.buffer.is_empty() {
-        return None;
+        return Ok(None);
     }
-    let pcm = std::mem::take(&mut c.buffer);
+    if let Some(e) = items_full(c, eid) {
+        return Err(e);
+    }
+    let (fmt, _) = input_format(&c.session);
+    let pcm = to_pcm16(fmt, &c.buffer);
+    if c.audio_bytes + pcm.len() > c.limits.audio_bytes {
+        return Err(error_ev(
+            "invalid_request_error",
+            "conversation_audio_limit_exceeded",
+            &format!(
+                "committed audio is limited to {} bytes per connection; delete earlier audio items or clear the buffer",
+                c.limits.audio_bytes
+            ),
+            eid,
+        ));
+    }
+    c.buffer.clear();
     let prev = c
         .items
         .last()
@@ -349,6 +555,7 @@ fn commit(c: &mut Conn, tx: &mpsc::UnboundedSender<Value>) -> Option<String> {
         .unwrap_or(Value::Null);
     let item_id = uid("item");
     let _ = tx.send(json!({"type": "input_audio_buffer.committed", "previous_item_id": prev, "item_id": item_id}));
+    c.audio_bytes += pcm.len();
     c.audio.insert(item_id.clone(), pcm);
     add_item(
         c,
@@ -357,7 +564,7 @@ fn commit(c: &mut Conn, tx: &mpsc::UnboundedSender<Value>) -> Option<String> {
         None,
         tx,
     );
-    Some(item_id)
+    Ok(Some(item_id))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -400,7 +607,10 @@ async fn handle(
                 ));
                 return;
             };
-            c.buffer.extend_from_slice(&b);
+            if let Err(e) = append_audio(&mut c, &b, eid) {
+                let _ = tx.send(e);
+                return;
+            }
             // Server VAD: speech when the level passes the threshold,
             // a turn when it stays quiet for silence_duration_ms.
             let td = c
@@ -413,23 +623,21 @@ async fn handle(
                 .and_then(|t| t.as_str())
                 .is_some_and(|t| t.ends_with("vad"))
             {
-                let pcm = c
-                    .session
-                    .pointer("/audio/input/format/type")
-                    .and_then(|t| t.as_str())
-                    .unwrap_or("audio/pcm")
-                    == "audio/pcm";
+                // Byte math and loudness follow the negotiated format:
+                // G.711 is decoded to pcm16 before its level is taken.
+                let (fmt, _) = input_format(&c.session);
+                let per_ms = bytes_per_ms(&c.session);
                 let threshold = td.get("threshold").and_then(|v| v.as_f64()).unwrap_or(0.5) * 0.1;
                 let silence_ms = td
                     .get("silence_duration_ms")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(500) as usize;
-                let loud = !pcm || pcm_level(&b) > threshold;
+                let loud = input_level(fmt, &b) > threshold;
                 if loud {
                     c.quiet = 0;
                     if !c.speaking {
                         c.speaking = true;
-                        let at = (c.buffer.len() / 48) as u64;
+                        let at = (c.buffer.len() / per_ms) as u64;
                         let _ = tx.send(json!({"type": "input_audio_buffer.speech_started", "audio_start_ms": at, "item_id": uid("item")}));
                         if td
                             .get("interrupt_response")
@@ -443,12 +651,18 @@ async fn handle(
                     }
                 } else if c.speaking {
                     c.quiet += b.len();
-                    if c.quiet >= silence_ms * 48 {
+                    if c.quiet >= silence_ms * per_ms {
                         c.speaking = false;
                         c.quiet = 0;
-                        let at = (c.buffer.len() / 48) as u64;
+                        let at = (c.buffer.len() / per_ms) as u64;
                         let _ = tx.send(json!({"type": "input_audio_buffer.speech_stopped", "audio_end_ms": at, "item_id": Value::Null}));
-                        let committed = commit(&mut c, tx);
+                        let committed = match commit(&mut c, tx, eid) {
+                            Ok(id) => id,
+                            Err(e) => {
+                                let _ = tx.send(e);
+                                None
+                            }
+                        };
                         if let Some(id) = &committed {
                             transcribe(
                                 &c,
@@ -467,6 +681,10 @@ async fn handle(
                             .unwrap_or(true)
                             && c.session["type"] != "transcription";
                         if committed.is_some() && create {
+                            if let Some(e) = items_full(&c, eid) {
+                                let _ = tx.send(e);
+                                return;
+                            }
                             start_response(
                                 &mut c,
                                 json!({}),
@@ -482,8 +700,11 @@ async fn handle(
                 }
             }
         }
-        "input_audio_buffer.commit" => {
-            if let Some(id) = commit(&mut c, tx) {
+        "input_audio_buffer.commit" => match commit(&mut c, tx, eid) {
+            Err(e) => {
+                let _ = tx.send(e);
+            }
+            Ok(Some(id)) => {
                 transcribe(
                     &c,
                     &id,
@@ -494,7 +715,8 @@ async fn handle(
                     headers,
                     sid,
                 );
-            } else {
+            }
+            Ok(None) => {
                 let _ = tx.send(error_ev(
                     "invalid_request_error",
                     "input_audio_buffer_commit_empty",
@@ -502,10 +724,11 @@ async fn handle(
                     eid,
                 ));
             }
-        }
+        },
         "input_audio_buffer.clear" => {
             c.buffer.clear();
             c.speaking = false;
+            c.quiet = 0;
             let _ = tx.send(json!({"type": "input_audio_buffer.cleared"}));
         }
         "output_audio_buffer.clear" => {
@@ -521,6 +744,25 @@ async fn handle(
                 ));
                 return;
             };
+            if let Some(e) = items_full(&c, eid) {
+                let _ = tx.send(e);
+                return;
+            }
+            // Inline audio counts toward the committed-audio bound.
+            let inline = inline_audio_len(&item);
+            if c.audio_bytes + inline > c.limits.audio_bytes {
+                let _ = tx.send(error_ev(
+                    "invalid_request_error",
+                    "conversation_audio_limit_exceeded",
+                    &format!(
+                        "conversation audio is limited to {} bytes per connection",
+                        c.limits.audio_bytes
+                    ),
+                    eid,
+                ));
+                return;
+            }
+            c.audio_bytes += inline;
             let prev = ev
                 .get("previous_item_id")
                 .and_then(|v| v.as_str())
@@ -549,10 +791,8 @@ async fn handle(
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            let before = c.items.len();
-            c.items.retain(|i| i["id"] != json!(id));
-            c.audio.remove(&id);
-            if c.items.len() < before {
+            let removed = remove_item(&mut c, &id);
+            if removed {
                 let _ = tx.send(json!({"type": "conversation.item.deleted", "item_id": id}));
             } else {
                 let _ = tx.send(error_ev(
@@ -586,6 +826,11 @@ async fn handle(
                     "a response is already in progress",
                     eid,
                 ));
+                return;
+            }
+            // A response adds items; refuse it when the conversation is full.
+            if let Some(e) = items_full(&c, eid) {
+                let _ = tx.send(e);
                 return;
             }
             start_response(
@@ -631,11 +876,7 @@ fn chat_messages(c: &Conn, instructions: &str) -> Vec<Value> {
     if !instructions.trim().is_empty() {
         out.push(json!({"role": "system", "content": instructions}));
     }
-    let rate = c
-        .session
-        .pointer("/audio/input/format/rate")
-        .and_then(|r| r.as_u64())
-        .unwrap_or(24000) as u32;
+    let (fmt, rate) = input_format(&c.session);
     for it in &c.items {
         match it["type"].as_str().unwrap_or("") {
             "message" => {
@@ -654,7 +895,7 @@ fn chat_messages(c: &Conn, instructions: &str) -> Vec<Value> {
                                 .audio
                                 .get(id)
                                 .cloned()
-                                .or_else(|| p["audio"].as_str().and_then(crate::openai_compat::b64_decode));
+                                .or_else(|| p["audio"].as_str().and_then(crate::openai_compat::b64_decode).map(|b| to_pcm16(fmt, &b)));
                             if let Some(t) = p["transcript"].as_str() {
                                 parts.push(json!({"type": "text", "text": t}));
                             } else if let Some(b) = bytes {
@@ -755,15 +996,7 @@ fn start_response(
         opts.get("input").and_then(|v| v.as_array()),
     ) {
         (Some("none"), Some(inp)) => {
-            let tmp = Conn {
-                session: c.session.clone(),
-                items: inp.clone(),
-                audio: HashMap::new(),
-                buffer: Vec::new(),
-                speaking: false,
-                quiet: 0,
-                running: None,
-            };
+            let tmp = Conn::new(c.session.clone(), inp.clone(), c.limits);
             chat_messages(&tmp, &instructions)
         }
         _ => chat_messages(c, &instructions),
@@ -1165,11 +1398,7 @@ fn transcribe(
     let Some(pcm) = c.audio.get(item_id) else {
         return;
     };
-    let rate = c
-        .session
-        .pointer("/audio/input/format/rate")
-        .and_then(|r| r.as_u64())
-        .unwrap_or(24000) as u32;
+    let (_, rate) = input_format(&c.session);
     let mut expected = match t.get("language").and_then(|l| l.as_str()) {
         Some(l) if !l.is_empty() => {
             format!("realtime input transcription: transcribe the attached audio (language {l})")
@@ -1466,6 +1695,124 @@ pub async fn calls() -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn small(buffer: usize, audio: usize, items: usize) -> Conn {
+        Conn::new(
+            default_session("m"),
+            Vec::new(),
+            Limits {
+                buffer_bytes: buffer,
+                audio_bytes: audio,
+                items,
+            },
+        )
+    }
+
+    #[test]
+    fn input_buffer_is_bounded() {
+        let mut c = small(10, 100, 10);
+        assert!(append_audio(&mut c, &[0; 6], None).is_ok());
+        let e = append_audio(&mut c, &[0; 6], Some(&json!("ev1"))).unwrap_err();
+        assert_eq!(e["type"], "error");
+        assert_eq!(e["error"]["code"], "input_audio_buffer_too_large");
+        assert_eq!(e["error"]["event_id"], "ev1");
+        assert_eq!(c.buffer.len(), 6, "a refused append changes nothing");
+        assert!(append_audio(&mut c, &[0; 4], None).is_ok());
+    }
+
+    #[test]
+    fn committed_audio_is_bounded_and_freed_on_delete() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut c = small(100, 10, 10);
+        append_audio(&mut c, &[1; 8], None).unwrap();
+        let id = commit(&mut c, &tx, None).unwrap().unwrap();
+        assert_eq!(c.audio_bytes, 8);
+        append_audio(&mut c, &[1; 4], None).unwrap();
+        let e = commit(&mut c, &tx, None).unwrap_err();
+        assert_eq!(e["error"]["code"], "conversation_audio_limit_exceeded");
+        assert_eq!(c.buffer.len(), 4, "a refused commit keeps the buffer");
+        assert!(remove_item(&mut c, &id));
+        assert_eq!(c.audio_bytes, 0);
+        assert!(commit(&mut c, &tx, None).unwrap().is_some());
+    }
+
+    #[test]
+    fn items_are_bounded() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut c = small(100, 100, 2);
+        add_item(
+            &mut c,
+            json!({"type": "message", "role": "user", "content": []}),
+            None,
+            &tx,
+        );
+        assert!(items_full(&c, None).is_none());
+        add_item(
+            &mut c,
+            json!({"type": "message", "role": "user", "content": []}),
+            None,
+            &tx,
+        );
+        let e = items_full(&c, None).unwrap();
+        assert_eq!(e["error"]["code"], "conversation_items_limit_exceeded");
+        append_audio(&mut c, &[1; 2], None).unwrap();
+        assert!(commit(&mut c, &tx, None).is_err(), "commit adds an item");
+    }
+
+    #[test]
+    fn limits_default_and_env_override() {
+        let d = Limits::from_env();
+        assert!(d.buffer_bytes > 0 && d.audio_bytes > 0 && d.items > 0);
+        assert_eq!(
+            inline_audio_len(&json!({"content": [{"type": "input_audio", "audio": "AAAA"}]})),
+            3
+        );
+    }
+
+    #[test]
+    fn vad_byte_math_follows_the_format() {
+        let mut s = default_session("m");
+        assert_eq!(bytes_per_ms(&s), 48);
+        merge(
+            &mut s,
+            &json!({"audio": {"input": {"format": {"type": "audio/pcm", "rate": 16000}}}}),
+        );
+        assert_eq!(bytes_per_ms(&s), 32);
+        // A G.711 format keeps a stale `rate` from the pcm default; it is 8 kHz.
+        merge(
+            &mut s,
+            &json!({"audio": {"input": {"format": {"type": "audio/pcmu"}}}}),
+        );
+        assert_eq!(input_format(&s), (InFormat::Ulaw, 8000));
+        assert_eq!(bytes_per_ms(&s), 8);
+        merge(
+            &mut s,
+            &json!({"audio": {"input": {"format": {"type": "audio/pcma"}}}}),
+        );
+        assert_eq!(input_format(&s), (InFormat::Alaw, 8000));
+    }
+
+    #[test]
+    fn g711_is_decoded_before_loudness() {
+        // Silence in G.711 is 0xff (mu-law) / 0xd5 (A-law): as raw bytes it
+        // would look loud; decoded it is quiet.
+        assert!(input_level(InFormat::Ulaw, &[0xff; 160]) < 0.01);
+        assert!(input_level(InFormat::Alaw, &[0xd5; 160]) < 0.01);
+        assert!(
+            pcm_level(&[0xd5; 160]) > 0.3,
+            "raw A-law silence reads loud"
+        );
+        // Full-scale codes decode loud.
+        assert!(input_level(InFormat::Ulaw, &[0x00, 0x80].repeat(80)) > 0.5);
+        assert!(input_level(InFormat::Alaw, &[0x2a, 0xaa].repeat(80)) > 0.5);
+        // Reference points of the G.711 tables.
+        assert_eq!(ulaw_to_pcm(0x00), -32124);
+        assert_eq!(ulaw_to_pcm(0x80), 32124);
+        assert_eq!(ulaw_to_pcm(0xff), 0);
+        assert_eq!(alaw_to_pcm(0xd5), 8);
+        assert_eq!(alaw_to_pcm(0x2a), -32256);
+        assert_eq!(to_pcm16(InFormat::Ulaw, &[0xff]).len(), 2);
+    }
 
     #[test]
     fn wav_round_trip() {

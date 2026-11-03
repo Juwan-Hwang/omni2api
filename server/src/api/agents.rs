@@ -116,9 +116,13 @@ fn str_map(v: Option<&Value>) -> Value {
     }
 }
 
-/// Apply the keys of `b` that are in `keys` onto `obj`.
+/// Apply the keys of `b` that are in `keys` onto `obj`; an object's own
+/// `id`, `object` and `created_at` are never taken from a body.
 fn patch(obj: &mut Value, b: &Value, keys: &[&str]) {
     for k in keys {
+        if stored::IMMUTABLE_KEYS.contains(k) {
+            continue;
+        }
         if let Some(v) = b.get(*k) {
             obj[*k] = v.clone();
         }
@@ -1206,9 +1210,10 @@ pub async fn create_environment_file(
             Some(f) => f.bytes.len(),
             None => return stored::not_found("file", fid),
         },
-        (None, Some(d)) => crate::openai_compat::b64_decode(d)
-            .map(|b| b.len())
-            .unwrap_or(d.len()),
+        (None, Some(d)) => match crate::openai_compat::b64_decode(d) {
+            Some(b) => b.len(),
+            None => return bad("data must be base64"),
+        },
         _ => return bad("file_id or data is required"),
     };
     let f = json!({"environment_id": id, "object": "agent.environment.file", "path": path, "size_bytes": size});
@@ -1346,6 +1351,12 @@ pub async fn delete_vault(principal: AuthPrincipal, Path(id): Path<String>) -> R
 }
 
 /// A credential's auth as it is shown: every secret taken out.
+///
+/// Write-only by design, as in OpenAI's vaults: a secret given to a
+/// credential is never returned by any read (create, get, list, update all
+/// show this stripped form). This server keeps nothing but the stripped
+/// form, so a secret also cannot be vended to a session later; the
+/// credential records what was configured, not the secret itself.
 fn public_auth(a: &Value) -> Value {
     let mut a = a.clone();
     fn strip(v: &mut Value) {
@@ -1841,6 +1852,20 @@ pub async fn get_invocation(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn patch_never_rewrites_identity() {
+        let mut o = json!({"id": "agent_1", "object": "agent", "created_at": 1, "name": "a"});
+        patch(
+            &mut o,
+            &json!({"id": "x", "object": "y", "created_at": 9, "name": "b"}),
+            &["id", "object", "created_at", "name"],
+        );
+        assert_eq!(
+            o,
+            json!({"id": "agent_1", "object": "agent", "created_at": 1, "name": "b"})
+        );
+    }
 
     #[test]
     fn tool_calls_group_and_outputs_follow() {

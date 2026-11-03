@@ -86,6 +86,9 @@ fn evict(g: &mut Map, owner: &str) {
     }
 }
 
+/// Keys an update never rewrites: an object's identity and birth time.
+pub const IMMUTABLE_KEYS: &[&str] = &["id", "object", "created_at"];
+
 pub fn put(id: &str, s: Stored) {
     let mut g = store().lock().unwrap();
     let event =

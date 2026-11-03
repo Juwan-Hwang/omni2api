@@ -988,12 +988,30 @@ fn perm_page(v: Vec<Value>) -> Value {
     json!({"object": "list", "data": v, "first_id": id(v.first()), "last_id": id(v.last()), "has_more": false})
 }
 
+/// Whether `ckpt` names a checkpoint of this key: a checkpoint of one of
+/// its jobs (by id or `fine_tuned_model_checkpoint`) or the model a job of
+/// its produced.
+fn checkpoint_exists(owner: &str, ckpt: &str) -> bool {
+    stored::list(owner, "fine_tuning.job").iter().any(|(_, s)| {
+        s.obj["fine_tuned_model"] == json!(ckpt)
+            || s.history
+                .iter()
+                .any(|c| c["id"] == json!(ckpt) || c["fine_tuned_model_checkpoint"] == json!(ckpt))
+    })
+}
+
 /// `POST /v1/fine_tuning/checkpoints/:ckpt/permissions`: share with projects.
 pub async fn create_permissions(
     principal: AuthPrincipal,
     Path(ckpt): Path<String>,
     Json(b): Json<Value>,
 ) -> Response {
+    if !checkpoint_exists(&principal.agent.id, &ckpt) {
+        return err(
+            StatusCode::NOT_FOUND,
+            &format!("No fine-tuned model checkpoint found with id '{ckpt}'."),
+        );
+    }
     let Some(projects) = b["project_ids"].as_array().filter(|a| !a.is_empty()) else {
         return err(StatusCode::BAD_REQUEST, "project_ids is required");
     };

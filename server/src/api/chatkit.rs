@@ -47,11 +47,34 @@ fn err(status: StatusCode, msg: &str) -> Response {
 
 // ── sessions ──
 
+/// What a client secret acts for. Only the ids the principal is rebuilt
+/// from are kept, never the API key that minted it.
 struct Secret {
-    principal: AuthPrincipal,
+    agent_id: String,
+    human_id: String,
+    api_key_id: String,
+    scope: crate::model::identity::KeyScope,
     session: String,
     user: String,
     expires_at: i64,
+    /// `max_requests_per_1_minute`, and the times of recent requests.
+    rpm: usize,
+    recent: std::collections::VecDeque<i64>,
+}
+
+impl Secret {
+    /// Count a request at `t` against the per-minute limit; false when the
+    /// last minute already holds `rpm` requests.
+    fn admit(&mut self, t_ms: i64) -> bool {
+        while self.recent.front().is_some_and(|x| *x <= t_ms - 60_000) {
+            self.recent.pop_front();
+        }
+        if self.recent.len() >= self.rpm {
+            return false;
+        }
+        self.recent.push_back(t_ms);
+        true
+    }
 }
 
 fn secrets() -> &'static Mutex<HashMap<String, Secret>> {
@@ -74,7 +97,8 @@ pub async fn create_session(principal: AuthPrincipal, Json(b): Json<Value>) -> R
     let rpm = b
         .pointer("/rate_limits/max_requests_per_1_minute")
         .and_then(|s| s.as_i64())
-        .unwrap_or(10);
+        .unwrap_or(10)
+        .max(1);
     let cfg = &b["chatkit_configuration"];
     let flag = |p: &str, d: bool| cfg.pointer(p).and_then(|v| v.as_bool()).unwrap_or(d);
     let id = uid("cksess");
@@ -102,10 +126,15 @@ pub async fn create_session(principal: AuthPrincipal, Json(b): Json<Value>) -> R
         g.insert(
             secret,
             Secret {
-                principal: principal.clone(),
+                agent_id: principal.agent.id.clone(),
+                human_id: principal.human.id.clone(),
+                api_key_id: principal.api_key.id.clone(),
+                scope: principal.api_key.scope,
                 session: id.clone(),
                 user: user.to_string(),
                 expires_at,
+                rpm: rpm as usize,
+                recent: std::collections::VecDeque::new(),
             },
         );
     }
@@ -253,15 +282,36 @@ async fn caller(app: &AppState, headers: &HeaderMap) -> Result<(AuthPrincipal, S
         ));
     };
     if key.starts_with("ck_") {
-        let g = secrets().lock().unwrap();
-        return match g.get(&key).filter(|s| s.expires_at > now()) {
-            Some(s) => {
-                let _ = &s.session;
-                Ok((s.principal.clone(), s.user.clone()))
+        let (agent_id, human_id, api_key_id, scope, user) = {
+            let mut g = secrets().lock().unwrap();
+            let Some(s) = g.get_mut(&key).filter(|s| s.expires_at > now()) else {
+                return Err(err(
+                    StatusCode::UNAUTHORIZED,
+                    "Expired or unknown client secret",
+                ));
+            };
+            let _ = &s.session;
+            if !s.admit(chrono::Utc::now().timestamp_millis()) {
+                return Err((
+                    StatusCode::TOO_MANY_REQUESTS,
+                    Json(json!({"error": {"message": format!("Rate limit reached for this ChatKit session: {} requests per minute.", s.rpm),
+                        "type": "rate_limit_exceeded", "code": "rate_limit_exceeded", "param": null}})),
+                )
+                    .into_response());
             }
+            (
+                s.agent_id.clone(),
+                s.human_id.clone(),
+                s.api_key_id.clone(),
+                s.scope,
+                s.user.clone(),
+            )
+        };
+        return match principal_of(app, &agent_id, &human_id, &api_key_id, scope).await {
+            Some(p) => Ok((p, user)),
             None => Err(err(
                 StatusCode::UNAUTHORIZED,
-                "Expired or unknown client secret",
+                "The key behind this client secret no longer exists",
             )),
         };
     }
@@ -269,6 +319,32 @@ async fn caller(app: &AppState, headers: &HeaderMap) -> Result<(AuthPrincipal, S
         Some(p) if p.api_key.scope.may_call() => Ok((p, String::new())),
         _ => Err(err(StatusCode::UNAUTHORIZED, "Invalid API key")),
     }
+}
+
+/// The principal a client secret acts for, rebuilt from its ids. The raw
+/// key is not kept, so it is not carried either (it is transient on every
+/// principal and nothing past authentication reads it).
+async fn principal_of(
+    app: &AppState,
+    agent_id: &str,
+    human_id: &str,
+    api_key_id: &str,
+    scope: crate::model::identity::KeyScope,
+) -> Option<AuthPrincipal> {
+    let agent = app.identity.get_agent(agent_id).await?;
+    let human = app.identity.get_human(human_id).await?;
+    Some(AuthPrincipal {
+        agent,
+        human,
+        api_key: crate::model::identity::ApiKey {
+            id: api_key_id.to_string(),
+            key: String::new(),
+            key_hash: None,
+            agent_id: agent_id.to_string(),
+            human_id: human_id.to_string(),
+            scope,
+        },
+    })
 }
 
 /// A thread in the protocol's shape, with a page of its items.
@@ -605,6 +681,28 @@ mod tests {
         assert_eq!(m[1]["content"], "hello");
         assert_eq!(rest_item(&u)["type"], "chatkit.user_message");
         assert_eq!(rest_item(&a)["created_at"], 1793577601);
+    }
+
+    #[test]
+    fn secret_admits_per_minute() {
+        let mut s = Secret {
+            agent_id: "a".into(),
+            human_id: "h".into(),
+            api_key_id: "k".into(),
+            scope: crate::model::identity::KeyScope::Caller,
+            session: "s".into(),
+            user: "u".into(),
+            expires_at: i64::MAX,
+            rpm: 2,
+            recent: Default::default(),
+        };
+        assert!(s.admit(0));
+        assert!(s.admit(1_000));
+        assert!(!s.admit(2_000), "third request inside the minute");
+        assert!(!s.admit(59_999));
+        assert!(s.admit(60_000), "the first one left the window");
+        assert!(!s.admit(60_500));
+        assert!(s.admit(61_000));
     }
 
     #[test]

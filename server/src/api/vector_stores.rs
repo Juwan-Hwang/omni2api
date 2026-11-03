@@ -511,25 +511,58 @@ pub async fn search(
         .and_then(|v| v.as_u64())
         .unwrap_or(10)
         .clamp(1, 50);
-    let mut files = Vec::new();
-    let mut attach = Vec::new();
-    for e in &s.input {
+    // Filters are enforced here, on the files' attributes; the seat only
+    // ever sees files that passed.
+    let filter = b.get("filters").filter(|f| !f.is_null());
+    if let Some(f) = filter {
+        if let Err(e) = check_filter(f) {
+            return err(StatusCode::BAD_REQUEST, &e);
+        }
+    }
+    let mut candidates = Vec::new();
+    for (order, e) in s.input.iter().enumerate() {
+        if filter.is_some_and(|f| !filter_matches(f, &e["attributes"])) {
+            continue;
+        }
         let fid = e["id"].as_str().unwrap_or("");
         if let Some(f) = crate::api::files::get(fid) {
-            files.push(json!({"id": fid, "filename": f.filename, "attributes": e["attributes"]}));
-            attach.push(crate::openai_compat::named_data_url(
-                &f.mime,
-                Some(&f.filename),
-                &crate::openai_compat::b64_encode(&f.bytes),
-            ));
+            candidates.push(Candidate {
+                rel: relevance(&f.bytes, &queries),
+                order,
+                id: fid.to_string(),
+                attributes: e["attributes"].clone(),
+                file: f,
+            });
         }
+    }
+    let matching = candidates.len();
+    let limit = search_max_bytes();
+    let chosen = pick_within(candidates, limit);
+    let mut files = Vec::new();
+    let mut attach = Vec::new();
+    for Candidate {
+        id,
+        attributes,
+        file: f,
+        ..
+    } in &chosen
+    {
+        files.push(json!({"id": id, "filename": f.filename, "attributes": attributes}));
+        attach.push(crate::openai_compat::named_data_url(
+            &f.mime,
+            Some(&f.filename),
+            &crate::openai_compat::b64_encode(&f.bytes),
+        ));
     }
     let mut want = format!(
         "search the {} attached file(s) for the query; answer with JSON, best first, at most {max}: [{{\"file\": \"<file name or id>\", \"score\": 0..1, \"text\": \"the matching passage\"}}], [] when nothing matches",
         files.len()
     );
-    if let Some(f) = b.get("filters").filter(|f| !f.is_null()) {
-        want.push_str(&format!("; only files whose attributes match {f}"));
+    if files.len() < matching {
+        want.push_str(&format!(
+            "; truncated: {} of the store's {matching} matching files are attached (the most relevant to the query, then the newest, within {limit} bytes); the rest were left out",
+            files.len()
+        ));
     }
     let spec = json!({"max": max, "files": files});
     let spec_c = spec.clone();
@@ -573,6 +606,120 @@ pub async fn search(
     .await
 }
 
+/// Total bytes of files one search may attach
+/// (`OMNI2API_VECTOR_SEARCH_MAX_BYTES`, default 16 MiB).
+fn search_max_bytes() -> usize {
+    std::env::var("OMNI2API_VECTOR_SEARCH_MAX_BYTES")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(16 * 1024 * 1024)
+}
+
+/// How often the query's words occur in a file read as text (0 for
+/// binary content): a cheap ranking for which files to attach first.
+fn relevance(bytes: &[u8], queries: &[String]) -> usize {
+    let text = String::from_utf8_lossy(bytes).to_lowercase();
+    queries
+        .iter()
+        .flat_map(|q| q.split_whitespace())
+        .map(|w| w.to_lowercase())
+        .filter(|w| w.chars().count() > 1)
+        .map(|w| text.matches(w.as_str()).count())
+        .sum()
+}
+
+/// A store file a search may attach.
+struct Candidate {
+    /// Query-word hits (see `relevance`).
+    rel: usize,
+    /// Position in the store: later is newer.
+    order: usize,
+    id: String,
+    attributes: Value,
+    file: crate::api::files::StoredFile,
+}
+
+/// The candidates that fit within `limit` bytes: most relevant first,
+/// newest first among equals; a file that does not fit is skipped.
+fn pick_within(mut c: Vec<Candidate>, limit: usize) -> Vec<Candidate> {
+    c.sort_by(|a, b| b.rel.cmp(&a.rel).then(b.order.cmp(&a.order)));
+    let mut used = 0;
+    c.into_iter()
+        .filter(|x| {
+            let fits = used + x.file.bytes.len() <= limit;
+            if fits {
+                used += x.file.bytes.len();
+            }
+            fits
+        })
+        .collect()
+}
+
+/// A filter is a comparison (`eq ne gt gte lt lte in nin` on `key`) or a
+/// compound (`and`/`or` over `filters`), as in OpenAI's file search.
+fn check_filter(f: &Value) -> Result<(), String> {
+    match f["type"].as_str().unwrap_or("") {
+        "and" | "or" => match f["filters"].as_array() {
+            Some(a) => a.iter().try_for_each(check_filter),
+            None => Err("a compound filter needs filters".into()),
+        },
+        "eq" | "ne" | "gt" | "gte" | "lt" | "lte" | "in" | "nin" => {
+            if f["key"].as_str().is_none() {
+                return Err("a comparison filter needs key".into());
+            }
+            if f.get("value").is_none() {
+                return Err("a comparison filter needs value".into());
+            }
+            Ok(())
+        }
+        other => Err(format!("unknown filter type {other:?}")),
+    }
+}
+
+/// Whether attributes pass a (checked) filter.
+pub fn filter_matches(f: &Value, attrs: &Value) -> bool {
+    let num = |v: &Value| v.as_f64();
+    match f["type"].as_str().unwrap_or("") {
+        "and" => f["filters"]
+            .as_array()
+            .is_some_and(|a| a.iter().all(|x| filter_matches(x, attrs))),
+        "or" => f["filters"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|x| filter_matches(x, attrs))),
+        op => {
+            let key = f["key"].as_str().unwrap_or("");
+            let want = &f["value"];
+            let have = attrs.get(key);
+            let eq = |h: &Value, w: &Value| match (num(h), num(w)) {
+                (Some(a), Some(b)) => a == b,
+                _ => h == w,
+            };
+            match (op, have) {
+                ("eq", Some(h)) => eq(h, want),
+                ("eq", None) => false,
+                ("ne", Some(h)) => !eq(h, want),
+                ("ne", None) => true,
+                ("in", Some(h)) => want.as_array().is_some_and(|a| a.iter().any(|w| eq(h, w))),
+                ("in", None) => false,
+                ("nin", Some(h)) => !want.as_array().is_some_and(|a| a.iter().any(|w| eq(h, w))),
+                ("nin", None) => true,
+                (cmp, Some(h)) => match (num(h), num(want)) {
+                    (Some(a), Some(b)) => match cmp {
+                        "gt" => a > b,
+                        "gte" => a >= b,
+                        "lt" => a < b,
+                        "lte" => a <= b,
+                        _ => false,
+                    },
+                    _ => false,
+                },
+                _ => false,
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -587,5 +734,83 @@ mod tests {
             .contains("not a file"));
         assert!(parse_hits("[]", &spec).unwrap().is_empty());
         assert!(parse_hits(r#"[{"file":"a.txt","text":"1"},{"file":"a.txt","text":"2"},{"file":"a.txt","text":"3"}]"#, &spec).is_err());
+    }
+
+    #[test]
+    fn filters_are_enforced_on_attributes() {
+        let a = json!({"author": "kim", "year": 2024, "draft": false});
+        let eq = |k: &str, v: Value| json!({"type": "eq", "key": k, "value": v});
+        assert!(filter_matches(&eq("author", json!("kim")), &a));
+        assert!(!filter_matches(&eq("author", json!("lee")), &a));
+        assert!(!filter_matches(&eq("missing", json!("kim")), &a));
+        assert!(filter_matches(&eq("year", json!(2024.0)), &a));
+        assert!(filter_matches(&eq("draft", json!(false)), &a));
+        assert!(filter_matches(
+            &json!({"type": "ne", "key": "author", "value": "lee"}),
+            &a
+        ));
+        assert!(filter_matches(
+            &json!({"type": "gte", "key": "year", "value": 2024}),
+            &a
+        ));
+        assert!(!filter_matches(
+            &json!({"type": "lt", "key": "year", "value": 2024}),
+            &a
+        ));
+        assert!(filter_matches(
+            &json!({"type": "in", "key": "author", "value": ["x", "kim"]}),
+            &a
+        ));
+        assert!(!filter_matches(
+            &json!({"type": "nin", "key": "author", "value": ["kim"]}),
+            &a
+        ));
+        let and = json!({"type": "and", "filters": [eq("author", json!("kim")), eq("year", json!(2023))]});
+        assert!(!filter_matches(&and, &a));
+        let or =
+            json!({"type": "or", "filters": [eq("author", json!("lee")), eq("year", json!(2024))]});
+        assert!(filter_matches(&or, &a));
+        assert!(check_filter(&json!({"type": "like", "key": "a", "value": 1})).is_err());
+        assert!(check_filter(&json!({"type": "eq", "value": 1})).is_err());
+        assert!(check_filter(&and).is_ok());
+    }
+
+    #[test]
+    fn attachments_fit_the_byte_limit_most_relevant_first() {
+        let q = vec!["rust borrow".to_string()];
+        let f = |order: usize, id: &str, body: &str| Candidate {
+            rel: relevance(body.as_bytes(), &q),
+            order,
+            id: id.into(),
+            attributes: json!({}),
+            file: crate::api::files::StoredFile {
+                owner: "o".into(),
+                filename: format!("{id}.txt"),
+                mime: "text/plain".into(),
+                purpose: "assistants".into(),
+                bytes: body.as_bytes().to_vec(),
+                created_at: 0,
+            },
+        };
+        let c: Vec<_> = [
+            ("old", "rust borrow rust"),  // relevant, older
+            ("new", "nothing here...."),  // newest, irrelevant
+            ("mid", "rust only here..."), // somewhat relevant
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, (id, body))| f(i, id, body))
+        .collect();
+        // Room for two of the three 16-17 byte files.
+        let picked = pick_within(c, 34);
+        let ids: Vec<_> = picked.iter().map(|x| x.id.as_str()).collect();
+        assert_eq!(ids, ["old", "mid"]);
+        // Equal relevance: the newest wins.
+        let c: Vec<_> = (0..3)
+            .map(|i| f(i, &format!("f{i}"), "xxxxxxxxxx"))
+            .collect();
+        let picked = pick_within(c, 10);
+        assert_eq!(picked.len(), 1);
+        assert_eq!(picked[0].id, "f2");
     }
 }

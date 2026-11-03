@@ -463,7 +463,26 @@ pub fn publish(headers: &HeaderMap, owner: &str, mime: &str, bytes: Vec<u8>) -> 
 
 /// This server as the caller reached it.
 pub fn base_url(headers: &HeaderMap) -> String {
-    if let Ok(u) = std::env::var("SERVER_PUBLIC_URL") {
+    let env = |k: &str| std::env::var(k).ok();
+    base_url_from(
+        headers,
+        env("SERVER_PUBLIC_URL")
+            .or_else(|| env("OMNI2API_PUBLIC_URL"))
+            .as_deref(),
+        env("OMNI2API_TRUST_PROXY").is_some_and(|v| matches!(v.trim(), "1" | "true" | "yes")),
+    )
+}
+
+/// The public base URL links are published under.
+///
+/// A configured address wins (`SERVER_PUBLIC_URL`, else
+/// `OMNI2API_PUBLIC_URL`, the named-tunnel address). Without one the
+/// request's own `Host` is used, `https` unless it is a loopback host.
+/// `X-Forwarded-Host` and `X-Forwarded-Proto` are client-settable through
+/// most proxies, so they count only when `OMNI2API_TRUST_PROXY` says the
+/// proxy in front sets them itself.
+pub fn base_url_from(headers: &HeaderMap, configured: Option<&str>, trust_proxy: bool) -> String {
+    if let Some(u) = configured {
         let u = u.trim().trim_end_matches('/');
         if !u.is_empty() {
             return u.to_string();
@@ -476,13 +495,15 @@ pub fn base_url(headers: &HeaderMap) -> String {
             .map(|s| s.split(',').next().unwrap_or("").trim().to_string())
             .filter(|s| !s.is_empty())
     };
-    let host = h("x-forwarded-host")
+    let forwarded = |n: &str| if trust_proxy { h(n) } else { None };
+    let host = forwarded("x-forwarded-host")
         .or_else(|| h("host"))
         .unwrap_or_else(|| "localhost".into());
     let local =
         host.starts_with("localhost") || host.starts_with("127.") || host.starts_with("[::1]");
-    let proto =
-        h("x-forwarded-proto").unwrap_or_else(|| if local { "http" } else { "https" }.into());
+    let proto = forwarded("x-forwarded-proto")
+        .filter(|p| p == "http" || p == "https")
+        .unwrap_or_else(|| if local { "http" } else { "https" }.into());
     format!("{proto}://{host}")
 }
 
@@ -532,6 +553,57 @@ pub fn image_size(b: &[u8]) -> Option<(u32, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn hdrs(pairs: &[(&'static str, &str)]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for (k, v) in pairs {
+            h.insert(*k, v.parse().unwrap());
+        }
+        h
+    }
+
+    #[test]
+    fn base_url_ignores_forwarded_host_unless_trusted() {
+        // Production shape: nginx behind Cloudflare sets Host and
+        // X-Forwarded-Proto itself, but passes a client X-Forwarded-Host.
+        let prod = hdrs(&[
+            ("host", "api.juwanh.com"),
+            ("x-forwarded-proto", "https"),
+            ("x-forwarded-host", "evil.example"),
+        ]);
+        assert_eq!(base_url_from(&prod, None, false), "https://api.juwanh.com");
+        // Without trust, a client X-Forwarded-Proto cannot downgrade either.
+        let h = hdrs(&[("host", "api.juwanh.com"), ("x-forwarded-proto", "http")]);
+        assert_eq!(base_url_from(&h, None, false), "https://api.juwanh.com");
+        // Trusted proxy: its headers win.
+        assert_eq!(base_url_from(&prod, None, true), "https://evil.example");
+        let h = hdrs(&[
+            ("host", "10.0.0.2:8080"),
+            ("x-forwarded-host", "pub.example"),
+            ("x-forwarded-proto", "http"),
+        ]);
+        assert_eq!(base_url_from(&h, None, true), "http://pub.example");
+        // A configured address wins over every header.
+        assert_eq!(
+            base_url_from(&prod, Some("https://files.example/ "), true),
+            "https://files.example"
+        );
+        assert_eq!(
+            base_url_from(&prod, Some("https://x.example/"), false),
+            "https://x.example"
+        );
+        assert_eq!(
+            base_url_from(&prod, Some("  "), false),
+            "https://api.juwanh.com"
+        );
+        // Loopback hosts stay http.
+        let h = hdrs(&[("host", "127.0.0.1:8088")]);
+        assert_eq!(base_url_from(&h, None, false), "http://127.0.0.1:8088");
+        assert_eq!(
+            base_url_from(&HeaderMap::new(), None, false),
+            "http://localhost"
+        );
+    }
 
     #[test]
     fn answer_splits_text_and_files() {

@@ -195,6 +195,11 @@ impl IdentityRepository for MemoryStore {
         data.humans.get(id).cloned()
     }
 
+    async fn get_agent(&self, id: &str) -> Option<AgentIdentity> {
+        let data = self.data.lock().await;
+        data.agents.get(id).cloned()
+    }
+
     async fn set_human_status(&self, id: &str, status: HumanStatus) -> bool {
         let mut data = self.data.lock().await;
         match data.humans.get_mut(id) {

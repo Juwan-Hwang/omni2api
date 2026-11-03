@@ -1,6 +1,6 @@
 [package]
 name = "omni2api-server"
-version = "0.1.15"
+version = "0.1.16"
 edition = "2021"
 license = "MIT"
 description = "Omni2API server core — anything-as-an-API runtime"
@@ -76,7 +76,7 @@ chrono-tz = "0.10"
 thiserror = "1"
 anyhow = "1"
 dotenvy = "0.15"
-reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.11", default-features = false, features = ["json", "stream", "rustls-tls"] }
 # Egress policy: WHATWG URL parsing (webhook targets) and hyper's Name type
 # (the blocking DNS resolver). Both already ship with reqwest.
 url = "2"

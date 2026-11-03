@@ -183,13 +183,23 @@ pub fn ipv4_blocked(ip: &std::net::Ipv4Addr) -> bool {
 }
 
 /// An IPv6 no server egress may target: loopback, unspecified, link-local,
-/// unique-local, and any IPv4-mapped or IPv4-compatible form of a blocked
-/// IPv4 ([::ffff:127.0.0.1] is 127.0.0.1).
+/// unique-local, any IPv4-mapped or IPv4-compatible form of a blocked IPv4
+/// ([::ffff:127.0.0.1] is 127.0.0.1), the well-known NAT64 prefix
+/// 64:ff9b::/96 judged by the IPv4 it embeds (RFC 6052), and the whole
+/// local-use NAT64 prefix 64:ff9b:1::/48 (RFC 8215), whose translation
+/// targets are site-defined.
 pub fn ipv6_blocked(ip: &std::net::Ipv6Addr) -> bool {
+    let seg = ip.segments();
+    if seg[0] == 0x64 && seg[1] == 0xff9b && seg[2] == 1 {
+        return true; // 64:ff9b:1::/48
+    }
+    if seg[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+        let o = ip.octets();
+        return ipv4_blocked(&std::net::Ipv4Addr::new(o[12], o[13], o[14], o[15]));
+    }
     if let Some(v4) = ip.to_ipv4() {
         return ipv4_blocked(&v4);
     }
-    let seg = ip.segments();
     ip.is_loopback()
         || ip.is_unspecified()
         || seg[0] & 0xffc0 == 0xfe80 // link-local
@@ -446,15 +456,19 @@ pub async fn test(
         return err(&format!("unknown event type {kind}"));
     }
     let url = s.obj["url"].as_str().unwrap_or("").to_string();
-    // Uniform result: distinguishing "answered 401" from "connection
+    // Uniform failure: distinguishing "answered 401" from "connection
     // refused" from "blocked address" would make /test a port/host oracle.
-    let ok = matches!(
-        deliver(&url, &secret_of(&s), &event(&kind, "test")).await,
-        Ok(code) if (200..300).contains(&code)
-    );
-    Json(json!({"object": "webhook_endpoint.test",
-        "event_type": kind, "success": ok, "webhook_endpoint_id": id}))
-    .into_response()
+    // Only a 2xx carries its status code; every failure is the same body.
+    let code = match deliver(&url, &secret_of(&s), &event(&kind, "test")).await {
+        Ok(code) if (200..300).contains(&code) => Some(code),
+        _ => None,
+    };
+    let mut out = json!({"object": "webhook_endpoint.test",
+        "event_type": kind, "success": code.is_some(), "webhook_endpoint_id": id});
+    if let Some(code) = code {
+        out["status_code"] = json!(code);
+    }
+    Json(out).into_response()
 }
 
 /// The event a status change of a stored object is, if any.
@@ -555,6 +569,29 @@ mod tests {
             transition(&e("in_progress"), &e("completed")),
             Some("eval.run.succeeded")
         );
+    }
+
+    #[test]
+    fn nat64_embedded_ipv4_is_judged() {
+        let b = |s: &str| ipv6_blocked(&s.parse().unwrap());
+        // 64:ff9b::/96 carries the IPv4 in its last 32 bits.
+        assert!(b("64:ff9b::7f00:1")); // 127.0.0.1
+        assert!(b("64:ff9b::a9fe:a9fe")); // 169.254.169.254
+        assert!(b("64:ff9b::a00:1")); // 10.0.0.1
+        assert!(b("64:ff9b::c0a8:101")); // 192.168.1.1
+        assert!(b("64:ff9b::6440:1")); // 100.64.0.1 (CGNAT)
+        assert!(!b("64:ff9b::808:808")); // 8.8.8.8
+        assert!(!b("64:ff9b::5db8:d822")); // 93.184.216.34
+                                           // 64:ff9b:1::/48 is local-use NAT64: blocked whole.
+        assert!(b("64:ff9b:1::808:808"));
+        assert!(b("64:ff9b:1:ffff::1"));
+        // Just outside both prefixes.
+        assert!(!b("64:ff9b:2::808:808"));
+        assert!(!b("64:ff9a::7f00:1"));
+        // The literal URL check goes through the same predicate.
+        assert!(!valid_url("http://[64:ff9b::7f00:1]/"));
+        assert!(!valid_url("http://[64:ff9b:1::808:808]/"));
+        assert!(valid_url("http://[64:ff9b::808:808]/"));
     }
 
     #[test]

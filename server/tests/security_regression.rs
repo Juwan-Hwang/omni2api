@@ -511,14 +511,19 @@ async fn webhook_test_result_is_uniform() {
     // a loopback literal (connection refused) and a loopback name (the
     // blocking DNS resolver refuses it). Registered straight into the
     // store, since create would reject these URLs on sight.
+    // A third endpoint answers 401: a non-2xx must look the same as a
+    // refused connection and a blocked name.
+    let rejecting = hook_server(axum::http::StatusCode::UNAUTHORIZED).await;
     let uid = uuid::Uuid::new_v4().simple().to_string();
     let ids = [
         format!("whep_uniform_a_{uid}"),
         format!("whep_uniform_b_{uid}"),
+        format!("whep_uniform_c_{uid}"),
     ];
     for (id, url) in [
-        (&ids[0], "http://127.0.0.1:9/hook"),
-        (&ids[1], "http://localhost:9/hook"),
+        (&ids[0], "http://127.0.0.1:9/hook".to_string()),
+        (&ids[1], "http://localhost:9/hook".to_string()),
+        (&ids[2], format!("http://{rejecting}/hook")),
     ] {
         omni2api_server::api::stored::put(
             id,
@@ -557,6 +562,51 @@ async fn webhook_test_result_is_uniform() {
         bodies[0], bodies[1],
         "every failure mode returns the identical result"
     );
+    assert_eq!(
+        bodies[0], bodies[2],
+        "a non-2xx answer returns the identical result"
+    );
+    assert!(bodies[0].get("status_code").is_none(), "{}", bodies[0]);
+}
+
+/// A tiny receiver on loopback that answers every POST with `status`.
+async fn hook_server(status: axum::http::StatusCode) -> String {
+    let app =
+        axum::Router::new().route("/hook", axum::routing::post(move || async move { status }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    addr
+}
+
+// ── 7b. a successful /test reports the 2xx status code ──
+#[tokio::test]
+async fn webhook_test_success_carries_status_code() {
+    let (_r, addr) = app_two_owners().await;
+    let ok = hook_server(axum::http::StatusCode::NO_CONTENT).await;
+    let id = format!("whep_success_{}", uuid::Uuid::new_v4().simple());
+    omni2api_server::api::stored::put(
+        &id,
+        omni2api_server::api::stored::Stored {
+            owner: "agt_demo_codex".to_string(),
+            obj: json!({"id": id, "object": "webhook_endpoint", "url": format!("http://{ok}/hook"),
+                        "event_types": ["response.completed"], "status": "enabled"}),
+            input: Vec::new(),
+            history: Vec::new(),
+        },
+    );
+    let (s, v) = post(
+        &addr,
+        KEY_A,
+        &format!("/v1/webhook_endpoints/{id}/test"),
+        json!({"event_type": "response.completed"}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["success"], json!(true), "{v}");
+    assert_eq!(v["status_code"], json!(204), "{v}");
 }
 
 // ── 8. multipart uploads reject the reserved purpose too ──

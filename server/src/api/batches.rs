@@ -23,6 +23,73 @@ const ENDPOINTS: &[&str] = &[
 /// How many lines of a batch run at once.
 const PARALLEL: usize = 4;
 
+/// The completion window: a batch expires this long after it is created.
+const WINDOW_SECS: i64 = 86_400;
+
+/// Most request lines one batch may hold (`OMNI2API_BATCH_MAX_LINES`,
+/// default 50 000 as at OpenAI).
+fn max_lines() -> usize {
+    std::env::var("OMNI2API_BATCH_MAX_LINES")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(50_000)
+}
+
+/// What became of one line.
+#[derive(Debug, Clone, PartialEq)]
+enum Outcome {
+    Done(u16, Value),
+    /// Not answered before `expires_at`.
+    Expired,
+}
+
+/// Run every line through `f`, `PARALLEL` at a time, in order; a line
+/// still unanswered at `deadline` (or not started by then) is `Expired`.
+async fn run_lines<F, Fut>(
+    lines: Vec<Value>,
+    deadline: tokio::time::Instant,
+    f: F,
+) -> Vec<(Value, Outcome)>
+where
+    F: Fn(Value) -> Fut,
+    Fut: std::future::Future<Output = (u16, Value)>,
+{
+    use futures::StreamExt;
+    futures::stream::iter(lines)
+        .map(|line| {
+            let fut = f(line.clone());
+            async move {
+                match tokio::time::timeout_at(deadline, fut).await {
+                    Ok((status, v)) => (line, Outcome::Done(status, v)),
+                    Err(_) => (line, Outcome::Expired),
+                }
+            }
+        })
+        .buffered(PARALLEL)
+        .collect()
+        .await
+}
+
+/// The output and error file lines for the outcomes.
+fn result_lines(results: Vec<(Value, Outcome)>) -> (Vec<Value>, Vec<Value>) {
+    let (mut out, mut errs) = (Vec::new(), Vec::new());
+    for (line, outcome) in results {
+        let custom_id = line["custom_id"].clone();
+        let rid = format!("batch_req_{}", uuid::Uuid::now_v7().simple());
+        match outcome {
+            Outcome::Done(status, v) if status < 400 => out.push(json!({"id": rid, "custom_id": custom_id,
+                "response": {"status_code": status, "request_id": rid, "body": v}, "error": null})),
+            Outcome::Done(status, v) => errs.push(json!({"id": rid, "custom_id": custom_id,
+                "response": {"status_code": status, "request_id": rid, "body": v},
+                "error": {"code": "request_failed", "message": v.pointer("/error/message").cloned().unwrap_or(Value::Null)}})),
+            Outcome::Expired => errs.push(json!({"id": rid, "custom_id": custom_id, "response": null,
+                "error": {"code": "batch_expired", "message": "This request could not be executed before the completion window expired."}})),
+        }
+    }
+    (out, errs)
+}
+
 fn err(status: StatusCode, msg: &str) -> Response {
     (
         status,
@@ -125,6 +192,14 @@ pub async fn create(
         );
     };
     let text = String::from_utf8_lossy(&file.bytes).to_string();
+    let limit = max_lines();
+    let count = text.lines().filter(|l| !l.trim().is_empty()).count();
+    if count > limit {
+        return err(
+            StatusCode::BAD_REQUEST,
+            &format!("the input file has {count} requests; a batch holds at most {limit}"),
+        );
+    }
     let mut lines = Vec::new();
     for (i, l) in text
         .lines()
@@ -171,7 +246,7 @@ pub async fn create(
         "error_file_id": null,
         "created_at": now,
         "in_progress_at": now,
-        "expires_at": now + 86400,
+        "expires_at": now + WINDOW_SECS,
         "finalizing_at": null,
         "completed_at": null,
         "failed_at": null,
@@ -192,56 +267,54 @@ pub async fn create(
         },
     );
     let bid = id.clone();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(WINDOW_SECS as u64);
     let task = tokio::spawn(async move {
-        use futures::StreamExt;
-        let results: Vec<(Value, u16, Value)> = futures::stream::iter(lines)
-            .map(|line| {
-                let (app, principal, headers, bid) =
-                    (app.clone(), principal.clone(), headers.clone(), bid.clone());
-                async move {
-                    // Each line its own conversation, even when two lines
-                    // start with the same words.
-                    let mut headers = headers;
-                    let key = format!("batch:{bid}:{}", line["custom_id"].as_str().unwrap_or(""));
-                    if let Ok(v) = axum::http::HeaderValue::from_str(&key) {
-                        headers.insert("x-omni2api-session-id", v);
-                    }
-                    let url = line["url"].as_str().unwrap_or("").to_string();
-                    let body = line.get("body").cloned().unwrap_or(json!({}));
-                    let (status, v) = dispatch(app, principal, headers, &url, body).await;
-                    stored::update(&bid, |s| {
-                        let k = if status < 400 { "completed" } else { "failed" };
-                        let n = s.obj["request_counts"][k].as_u64().unwrap_or(0);
-                        s.obj["request_counts"][k] = json!(n + 1);
-                    });
-                    (line, status, v)
+        let results = run_lines(lines, deadline, |line| {
+            let (app, principal, headers, bid) =
+                (app.clone(), principal.clone(), headers.clone(), bid.clone());
+            async move {
+                // Each line its own conversation, even when two lines
+                // start with the same words.
+                let mut headers = headers;
+                let key = format!("batch:{bid}:{}", line["custom_id"].as_str().unwrap_or(""));
+                if let Ok(v) = axum::http::HeaderValue::from_str(&key) {
+                    headers.insert("x-omni2api-session-id", v);
                 }
-            })
-            .buffered(PARALLEL)
-            .collect()
-            .await;
-        let (mut out, mut errs) = (Vec::new(), Vec::new());
-        for (line, status, v) in results {
-            let custom_id = line["custom_id"].clone();
-            let rid = format!("batch_req_{}", uuid::Uuid::now_v7().simple());
-            if status < 400 {
-                out.push(json!({"id": rid, "custom_id": custom_id,
-                    "response": {"status_code": status, "request_id": rid, "body": v}, "error": null}));
-            } else {
-                errs.push(json!({"id": rid, "custom_id": custom_id,
-                    "response": {"status_code": status, "request_id": rid, "body": v},
-                    "error": {"code": "request_failed", "message": v.pointer("/error/message").cloned().unwrap_or(Value::Null)}}));
+                let url = line["url"].as_str().unwrap_or("").to_string();
+                let body = line.get("body").cloned().unwrap_or(json!({}));
+                let (status, v) = dispatch(app, principal, headers, &url, body).await;
+                stored::update(&bid, |s| {
+                    let k = if status < 400 { "completed" } else { "failed" };
+                    let n = s.obj["request_counts"][k].as_u64().unwrap_or(0);
+                    s.obj["request_counts"][k] = json!(n + 1);
+                });
+                (status, v)
             }
-        }
+        })
+        .await;
+        let expired = results
+            .iter()
+            .filter(|(_, o)| *o == Outcome::Expired)
+            .count();
+        let (out, errs) = result_lines(results);
         let of = jsonl_file(&owner, &format!("{bid}_output.jsonl"), "batch_output", &out);
         let ef = jsonl_file(&owner, &format!("{bid}_error.jsonl"), "batch_output", &errs);
         let now = chrono::Utc::now().timestamp();
         stored::update(&bid, |s| {
             s.obj["output_file_id"] = json!(of);
             s.obj["error_file_id"] = json!(ef);
-            s.obj["status"] = json!("completed");
             s.obj["finalizing_at"] = json!(now);
-            s.obj["completed_at"] = json!(now);
+            if expired > 0 {
+                // Past expires_at: what finished is kept, the rest is
+                // reported as batch_expired in the error file.
+                s.obj["status"] = json!("expired");
+                s.obj["expired_at"] = json!(now);
+                let n = s.obj["request_counts"]["failed"].as_u64().unwrap_or(0);
+                s.obj["request_counts"]["failed"] = json!(n + expired as u64);
+            } else {
+                s.obj["status"] = json!("completed");
+                s.obj["completed_at"] = json!(now);
+            }
         });
         stored::done_running(&bid);
     });
@@ -299,4 +372,40 @@ pub async fn list(principal: AuthPrincipal, Query(q): Query<ListQuery>) -> Respo
     let id_of = |x: Option<&Value>| x.and_then(|v| v.get("id")).cloned().unwrap_or(Value::Null);
     Json(json!({"object": "list", "first_id": id_of(items.first()), "last_id": id_of(items.last()), "has_more": has_more, "data": items}))
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn lines_past_expires_at_expire() {
+        let lines: Vec<Value> = (0..6)
+            .map(|i| json!({"custom_id": format!("r{i}"), "slow": i >= 3}))
+            .collect();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let r = run_lines(lines, deadline, |line| async move {
+            if line["slow"] == json!(true) {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            }
+            (200, json!({"ok": line["custom_id"]}))
+        })
+        .await;
+        assert_eq!(r.len(), 6, "order and count kept");
+        assert!(r[..3]
+            .iter()
+            .all(|(_, o)| matches!(o, Outcome::Done(200, _))));
+        assert!(r[3..].iter().all(|(_, o)| *o == Outcome::Expired));
+        let (out, errs) = result_lines(r);
+        assert_eq!(out.len(), 3);
+        assert_eq!(errs.len(), 3);
+        assert_eq!(errs[0]["custom_id"], "r3");
+        assert_eq!(errs[0]["error"]["code"], "batch_expired");
+        assert!(errs[0]["response"].is_null());
+    }
+
+    #[test]
+    fn line_cap_defaults_to_openai() {
+        assert_eq!(max_lines(), 50_000);
+    }
 }

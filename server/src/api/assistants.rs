@@ -126,7 +126,9 @@ pub async fn update_assistant(
     stored::update(&id, |s| {
         if let Some(o) = b.as_object() {
             for (k, v) in o {
-                s.obj[k] = v.clone();
+                if !stored::IMMUTABLE_KEYS.contains(&k.as_str()) {
+                    s.obj[k] = v.clone();
+                }
             }
         }
     });

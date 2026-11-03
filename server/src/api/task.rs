@@ -78,6 +78,14 @@ pub enum Delivery {
     /// once it is not, whitespace keeps the connection alive (a JSON parser
     /// skips it) and the status is 200 whatever follows.
     Json,
+    /// One body that may be raw media (audio bytes, a plain-text
+    /// transcript). Padding would commit JSON headers and a 200 status
+    /// before the answer is known, corrupting the download, so these
+    /// responses never pad: the request stays open (the inner task has its
+    /// own timeout) and the answer always arrives with its real status and
+    /// content type. Callers wanting liveness for long waits should use the
+    /// endpoint's streaming mode instead.
+    JsonRaw,
     /// Server-sent events from the start; `:` comments keep it alive.
     Sse,
 }
@@ -172,6 +180,10 @@ pub async fn run(
     });
 
     match delivery {
+        Delivery::JsonRaw => {
+            let a = rx.await.unwrap_or_else(|_| Err("no answer".into()));
+            finished_response(finish(a))
+        }
         Delivery::Json => {
             let mut rx = rx;
             match tokio::time::timeout(hold(), &mut rx).await {
@@ -381,7 +393,16 @@ pub async fn fetch(o: &Output) -> Option<(String, Vec<u8>)> {
     match o {
         Output::Bytes { mime, bytes, .. } => Some((mime.clone(), bytes.clone())),
         Output::Link(u) => {
-            let r = reqwest::Client::new()
+            // The seat names the URL but the server fetches it: same policy
+            // as webhook targets (public hosts only, no redirects), plus a
+            // hard size cap so a link cannot exhaust memory.
+            const MAX: usize = 64 * 1024 * 1024;
+            if !crate::api::webhooks::valid_url(u) {
+                return None;
+            }
+            let r = crate::api::webhooks::egress_client()
+                .build()
+                .ok()?
                 .get(u)
                 .timeout(Duration::from_secs(60))
                 .send()
@@ -390,12 +411,23 @@ pub async fn fetch(o: &Output) -> Option<(String, Vec<u8>)> {
             if !r.status().is_success() {
                 return None;
             }
+            if r.content_length().is_some_and(|n| n as usize > MAX) {
+                return None;
+            }
             let ct = r
                 .headers()
                 .get("content-type")
                 .and_then(|v| v.to_str().ok())
                 .map(|s| s.split(';').next().unwrap_or("").trim().to_string());
-            let b = r.bytes().await.ok()?.to_vec();
+            let mut b = Vec::new();
+            let mut stream = r.bytes_stream();
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk.ok()?;
+                if b.len() + chunk.len() > MAX {
+                    return None;
+                }
+                b.extend_from_slice(&chunk);
+            }
             let mime = crate::api::files::sniff_mime(&b)
                 .map(String::from)
                 .or(ct)
@@ -431,7 +463,26 @@ pub fn publish(headers: &HeaderMap, owner: &str, mime: &str, bytes: Vec<u8>) -> 
 
 /// This server as the caller reached it.
 pub fn base_url(headers: &HeaderMap) -> String {
-    if let Ok(u) = std::env::var("SERVER_PUBLIC_URL") {
+    let env = |k: &str| std::env::var(k).ok();
+    base_url_from(
+        headers,
+        env("SERVER_PUBLIC_URL")
+            .or_else(|| env("OMNI2API_PUBLIC_URL"))
+            .as_deref(),
+        env("OMNI2API_TRUST_PROXY").is_some_and(|v| matches!(v.trim(), "1" | "true" | "yes")),
+    )
+}
+
+/// The public base URL links are published under.
+///
+/// A configured address wins (`SERVER_PUBLIC_URL`, else
+/// `OMNI2API_PUBLIC_URL`, the named-tunnel address). Without one the
+/// request's own `Host` is used, `https` unless it is a loopback host.
+/// `X-Forwarded-Host` and `X-Forwarded-Proto` are client-settable through
+/// most proxies, so they count only when `OMNI2API_TRUST_PROXY` says the
+/// proxy in front sets them itself.
+pub fn base_url_from(headers: &HeaderMap, configured: Option<&str>, trust_proxy: bool) -> String {
+    if let Some(u) = configured {
         let u = u.trim().trim_end_matches('/');
         if !u.is_empty() {
             return u.to_string();
@@ -444,13 +495,15 @@ pub fn base_url(headers: &HeaderMap) -> String {
             .map(|s| s.split(',').next().unwrap_or("").trim().to_string())
             .filter(|s| !s.is_empty())
     };
-    let host = h("x-forwarded-host")
+    let forwarded = |n: &str| if trust_proxy { h(n) } else { None };
+    let host = forwarded("x-forwarded-host")
         .or_else(|| h("host"))
         .unwrap_or_else(|| "localhost".into());
     let local =
         host.starts_with("localhost") || host.starts_with("127.") || host.starts_with("[::1]");
-    let proto =
-        h("x-forwarded-proto").unwrap_or_else(|| if local { "http" } else { "https" }.into());
+    let proto = forwarded("x-forwarded-proto")
+        .filter(|p| p == "http" || p == "https")
+        .unwrap_or_else(|| if local { "http" } else { "https" }.into());
     format!("{proto}://{host}")
 }
 
@@ -500,6 +553,57 @@ pub fn image_size(b: &[u8]) -> Option<(u32, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn hdrs(pairs: &[(&'static str, &str)]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for (k, v) in pairs {
+            h.insert(*k, v.parse().unwrap());
+        }
+        h
+    }
+
+    #[test]
+    fn base_url_ignores_forwarded_host_unless_trusted() {
+        // Production shape: nginx behind Cloudflare sets Host and
+        // X-Forwarded-Proto itself, but passes a client X-Forwarded-Host.
+        let prod = hdrs(&[
+            ("host", "api.juwanh.com"),
+            ("x-forwarded-proto", "https"),
+            ("x-forwarded-host", "evil.example"),
+        ]);
+        assert_eq!(base_url_from(&prod, None, false), "https://api.juwanh.com");
+        // Without trust, a client X-Forwarded-Proto cannot downgrade either.
+        let h = hdrs(&[("host", "api.juwanh.com"), ("x-forwarded-proto", "http")]);
+        assert_eq!(base_url_from(&h, None, false), "https://api.juwanh.com");
+        // Trusted proxy: its headers win.
+        assert_eq!(base_url_from(&prod, None, true), "https://evil.example");
+        let h = hdrs(&[
+            ("host", "10.0.0.2:8080"),
+            ("x-forwarded-host", "pub.example"),
+            ("x-forwarded-proto", "http"),
+        ]);
+        assert_eq!(base_url_from(&h, None, true), "http://pub.example");
+        // A configured address wins over every header.
+        assert_eq!(
+            base_url_from(&prod, Some("https://files.example/ "), true),
+            "https://files.example"
+        );
+        assert_eq!(
+            base_url_from(&prod, Some("https://x.example/"), false),
+            "https://x.example"
+        );
+        assert_eq!(
+            base_url_from(&prod, Some("  "), false),
+            "https://api.juwanh.com"
+        );
+        // Loopback hosts stay http.
+        let h = hdrs(&[("host", "127.0.0.1:8088")]);
+        assert_eq!(base_url_from(&h, None, false), "http://127.0.0.1:8088");
+        assert_eq!(
+            base_url_from(&HeaderMap::new(), None, false),
+            "http://localhost"
+        );
+    }
 
     #[test]
     fn answer_splits_text_and_files() {

@@ -30,15 +30,38 @@ use omni2api_server::model::identity::{
 };
 use omni2api_server::model::message::{Message, MessageStatus, MessageVisibility};
 
+/// The PG tests share one database and each wipes its tables
+/// (`clean_db`), so two running at once delete each other's rows. Every
+/// test holds this lock for its whole body: they run one at a time, while
+/// the rest of the suite stays parallel.
+static PG_SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// A store plus the serial lock, held until the test ends.
+struct PgTest {
+    _serial: tokio::sync::MutexGuard<'static, ()>,
+    store: PostgresStore,
+}
+
+impl std::ops::Deref for PgTest {
+    type Target = PostgresStore;
+    fn deref(&self) -> &PostgresStore {
+        &self.store
+    }
+}
+
 /// Skip tests if DATABASE_URL is not set or PostgreSQL is not available.
-async fn get_store() -> Option<PostgresStore> {
+async fn get_store() -> Option<PgTest> {
     let db_url = std::env::var("DATABASE_URL").ok()?;
+    let serial = PG_SERIAL.lock().await;
     match PostgresStore::new(&db_url).await {
         Ok(store) => {
             // Run migrations (creates tables + seeds demo data).
             // If migrations fail, the tables might already exist — that's OK.
             let _ = store.migrate().await;
-            Some(store)
+            Some(PgTest {
+                _serial: serial,
+                store,
+            })
         }
         Err(_) => None,
     }
@@ -434,6 +457,25 @@ async fn test_pg_full_storage_chain() {
     let fetched = store.get_by_agent("agt_test_001").await;
     assert!(fetched.is_some(), "Should find conversation by agent");
     assert_eq!(fetched.unwrap().id, conv.id);
+
+    // 7. A key's live scope by id: what a ChatKit client secret re-checks
+    // on every use, so revoking the key ends its secrets at once.
+    use omni2api_server::model::identity::KeyScope;
+    let live = store.api_key_scope("key_test_001").await;
+    assert!(live.is_some_and(|s| s.may_call()), "{live:?}");
+    assert_eq!(store.api_key_scope("key_missing").await, None);
+    let mut revoked = ApiKey::new(
+        "key_test_001",
+        "ohk_test_key",
+        "agt_test_001",
+        "hum_test_001",
+    );
+    revoked.scope = KeyScope::Revoked;
+    store.insert_api_key(revoked).await;
+    assert_eq!(
+        store.api_key_scope("key_test_001").await,
+        Some(KeyScope::Revoked)
+    );
 
     clean_db(&store).await;
 }

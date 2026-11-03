@@ -33,6 +33,24 @@ pub struct Stored {
 
 type Map = (HashMap<String, Stored>, Vec<String>);
 
+/// Per-owner object quota: one caller's burst evicts its own oldest objects,
+/// never another owner's. `OMNI2API_STORE_MAX_PER_OWNER` overrides.
+fn max_per_owner() -> usize {
+    std::env::var("OMNI2API_STORE_MAX_PER_OWNER")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(KEEP)
+}
+
+/// Backstop across all owners, for many-owner deployments.
+/// `OMNI2API_STORE_MAX_TOTAL` overrides.
+fn max_total() -> usize {
+    std::env::var("OMNI2API_STORE_MAX_TOTAL")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(10 * KEEP)
+}
+
 fn store() -> &'static Mutex<Map> {
     static S: OnceLock<Mutex<Map>> = OnceLock::new();
     S.get_or_init(|| Mutex::new((HashMap::new(), Vec::new())))
@@ -44,12 +62,40 @@ fn running() -> &'static Mutex<HashMap<String, tokio::task::AbortHandle>> {
     R.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// The eviction both write paths share: the owner's own oldest objects go
+/// first (other owners untouched), then a global backstop on total count.
+fn evict(g: &mut Map, owner: &str) {
+    let mut mine =
+        g.1.iter()
+            .filter(|i| g.0.get(i.as_str()).is_some_and(|s| s.owner == owner))
+            .count();
+    while mine > max_per_owner() {
+        let Some(pos) =
+            g.1.iter()
+                .position(|i| g.0.get(i.as_str()).is_some_and(|s| s.owner == owner))
+        else {
+            break;
+        };
+        let old = g.1.remove(pos);
+        g.0.remove(&old);
+        mine -= 1;
+    }
+    while g.1.len() > max_total() {
+        let old = g.1.remove(0);
+        g.0.remove(&old);
+    }
+}
+
+/// Keys an update never rewrites: an object's identity and birth time.
+pub const IMMUTABLE_KEYS: &[&str] = &["id", "object", "created_at"];
+
 pub fn put(id: &str, s: Stored) {
     let mut g = store().lock().unwrap();
     let event =
         g.0.get(id)
             .and_then(|old| crate::api::webhooks::transition(&old.obj, &s.obj))
             .map(|k| (s.owner.clone(), k));
+    let owner = s.owner.clone();
     if g.0.insert(id.to_string(), s).is_none() {
         g.1.push(id.to_string());
     }
@@ -58,10 +104,23 @@ pub fn put(id: &str, s: Stored) {
         crate::api::webhooks::fire(&owner, kind, id);
         return;
     }
-    while g.1.len() > KEEP {
-        let old = g.1.remove(0);
-        g.0.remove(&old);
+    evict(&mut g, &owner);
+}
+
+/// Insert only when the id is free, atomically under one lock: the
+/// `exists` + `put` pair is a check-then-act race (two concurrent creates
+/// with the same caller-chosen id would both pass `exists`). Returns
+/// false when the id is taken; nothing is stored then.
+pub fn insert_new(id: &str, s: Stored) -> bool {
+    let mut g = store().lock().unwrap();
+    if g.0.contains_key(id) {
+        return false;
     }
+    let owner = s.owner.clone();
+    g.0.insert(id.to_string(), s);
+    g.1.push(id.to_string());
+    evict(&mut g, &owner);
+    true
 }
 
 pub fn get(owner: &str, id: &str) -> Option<Stored> {
@@ -222,25 +281,30 @@ fn page(items: Vec<Value>, q: &ListQuery, default_order: &str) -> Value {
 // ── Responses ──
 
 pub async fn get_response(principal: AuthPrincipal, Path(id): Path<String>) -> Response {
-    match get(&principal.agent.id, &id) {
+    match get(&principal.agent.id, &id).filter(|s| s.obj["object"] == "response") {
         Some(s) => Json(s.obj).into_response(),
         None => not_found("response", &id),
     }
 }
 
 pub async fn delete_response(principal: AuthPrincipal, Path(id): Path<String>) -> Response {
+    // Ownership and type first: aborting another owner's running task is as
+    // much a breach as deleting its object.
+    if get(&principal.agent.id, &id)
+        .filter(|s| s.obj["object"] == "response")
+        .is_none()
+    {
+        return not_found("response", &id);
+    }
     if let Some(h) = take_running(&id) {
         h.abort();
     }
-    if remove(&principal.agent.id, &id) {
-        Json(json!({"id": id, "object": "response", "deleted": true})).into_response()
-    } else {
-        not_found("response", &id)
-    }
+    remove(&principal.agent.id, &id);
+    Json(json!({"id": id, "object": "response", "deleted": true})).into_response()
 }
 
 pub async fn cancel_response(principal: AuthPrincipal, Path(id): Path<String>) -> Response {
-    let Some(s) = get(&principal.agent.id, &id) else {
+    let Some(s) = get(&principal.agent.id, &id).filter(|s| s.obj["object"] == "response") else {
         return not_found("response", &id);
     };
     if s.obj.get("background").and_then(|b| b.as_bool()) != Some(true) {
@@ -267,7 +331,7 @@ pub async fn response_input_items(
     Path(id): Path<String>,
     Query(q): Query<ListQuery>,
 ) -> Response {
-    match get(&principal.agent.id, &id) {
+    match get(&principal.agent.id, &id).filter(|s| s.obj["object"] == "response") {
         // Newest first by default, as OpenAI lists input items.
         Some(s) => Json(page(s.input, &q, "desc")).into_response(),
         None => not_found("response", &id),

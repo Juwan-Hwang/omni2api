@@ -77,6 +77,10 @@ thiserror = "1"
 anyhow = "1"
 dotenvy = "0.15"
 reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
+# Egress policy: WHATWG URL parsing (webhook targets) and hyper's Name type
+# (the blocking DNS resolver). Both already ship with reqwest.
+url = "2"
+hyper = { version = "0.14", default-features = false, features = ["client"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

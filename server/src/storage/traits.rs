@@ -40,6 +40,16 @@ pub trait IdentityRepository: Send + Sync {
     /// Insert an API key.
     async fn insert_api_key(&self, key: ApiKey);
 
+    /// The current scope of a key, by its id; `None` when no such key
+    /// exists. Credentials derived from a key (a ChatKit client secret)
+    /// check this on every use, so revoking or deleting the key cuts them
+    /// off at once instead of at their expiry. The default knows no key,
+    /// so a backend that does not implement it fails closed.
+    async fn api_key_scope(&self, id: &str) -> Option<crate::model::identity::KeyScope> {
+        let _ = id;
+        None
+    }
+
     /// Get a human by ID.
     async fn get_human(&self, id: &str) -> Option<HumanIdentity>;
 

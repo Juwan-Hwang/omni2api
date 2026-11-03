@@ -556,21 +556,49 @@ struct TaskInfo {
     spec: Value,
 }
 
-/// Conversations opened by a non-chat endpoint (an image, a transcript...).
-fn tasks() -> &'static Mutex<HashMap<String, TaskInfo>> {
-    static T: std::sync::OnceLock<Mutex<HashMap<String, TaskInfo>>> = std::sync::OnceLock::new();
-    T.get_or_init(|| Mutex::new(HashMap::new()))
+/// Conversations opened by a non-chat endpoint (an image, a transcript...),
+/// with their insertion order: eviction drops the OLDEST pending task, and
+/// HashMap iteration order must never pick the victim.
+#[derive(Default)]
+struct TaskMap {
+    map: HashMap<String, TaskInfo>,
+    order: std::collections::VecDeque<String>,
+}
+
+impl TaskMap {
+    /// Bounded: a task is answered once and never looked up again. Evict
+    /// the oldest entries rather than wiping the map: clearing it dropped
+    /// the specs of every other pending task, whose replies then failed
+    /// validation.
+    fn insert_bounded(&mut self, max: usize, conversation_id: &str, info: TaskInfo) {
+        if self.map.contains_key(conversation_id) {
+            self.order.retain(|i| i != conversation_id);
+        }
+        self.order.push_back(conversation_id.to_string());
+        self.map.insert(conversation_id.to_string(), info);
+        while self.map.len() > max {
+            let Some(old) = self.order.pop_front() else {
+                break;
+            };
+            self.map.remove(&old);
+        }
+    }
+}
+
+fn tasks() -> &'static Mutex<TaskMap> {
+    static T: std::sync::OnceLock<Mutex<TaskMap>> = std::sync::OnceLock::new();
+    T.get_or_init(|| Mutex::new(TaskMap::default()))
 }
 
 /// `files`: whether the answer is files (a picture) or text (a transcript).
 pub fn mark_task(conversation_id: &str, api: &str, files: bool, spec: Value) {
-    let mut g = tasks().lock().unwrap();
-    // Bounded: a task is answered once and never looked up again.
-    if g.len() > 10_000 {
-        g.clear();
-    }
-    g.insert(
-        conversation_id.to_string(),
+    let max: usize = std::env::var("OMNI2API_SESSION_MAX_TASKS")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(10_000);
+    tasks().lock().unwrap().insert_bounded(
+        max,
+        conversation_id,
         TaskInfo {
             api: api.to_string(),
             files,
@@ -584,6 +612,7 @@ pub fn task_api(conversation_id: &str) -> Option<(String, bool)> {
     tasks()
         .lock()
         .unwrap()
+        .map
         .get(conversation_id)
         .map(|t| (t.api.clone(), t.files))
 }
@@ -593,6 +622,7 @@ pub fn task_spec(conversation_id: &str) -> Option<(String, Value)> {
     tasks()
         .lock()
         .unwrap()
+        .map
         .get(conversation_id)
         .map(|t| (t.api.clone(), t.spec.clone()))
 }
@@ -672,6 +702,43 @@ mod tests {
             strip_injections_part("<user_info>\nOS: linux\n</user_info>"),
             ""
         );
+    }
+
+    #[test]
+    fn task_marks_evict_oldest_first() {
+        // Pure data-structure test: no process-wide env override (a
+        // parallel test reading OMNI2API_SESSION_MAX_TASKS would flake).
+        let info = || TaskInfo {
+            api: "images".to_string(),
+            files: true,
+            spec: serde_json::Value::Null,
+        };
+        let mut t = TaskMap::default();
+        for i in 0..6 {
+            t.insert_bounded(3, &format!("conv_evict_{i}"), info());
+        }
+        assert_eq!(t.map.len(), 3, "bounded at the cap");
+        for i in 0..3 {
+            assert!(
+                !t.map.contains_key(&format!("conv_evict_{i}")),
+                "the oldest go first (conv_evict_{i})"
+            );
+        }
+        for i in 3..6 {
+            assert!(
+                t.map.contains_key(&format!("conv_evict_{i}")),
+                "the newest survive (conv_evict_{i})"
+            );
+        }
+        // A re-mark moves the id to the back of the queue.
+        let mut t = TaskMap::default();
+        for id in ["a", "b", "c"] {
+            t.insert_bounded(3, id, info());
+        }
+        t.insert_bounded(3, "a", info());
+        t.insert_bounded(3, "d", info());
+        assert!(t.map.contains_key("a"), "re-marked id is now the newest");
+        assert!(!t.map.contains_key("b"), "b became the oldest");
     }
 
     #[test]

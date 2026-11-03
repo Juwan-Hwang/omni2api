@@ -315,7 +315,7 @@ fn has_c2pa(b: &[u8]) -> bool {
 }
 
 /// `POST /v1/content_provenance_checks` (multipart `file`).
-pub async fn provenance(principal: AuthPrincipal, mut mp: Multipart) -> Response {
+pub async fn provenance(_principal: AuthPrincipal, mut mp: Multipart) -> Response {
     let mut file: Option<Vec<u8>> = None;
     while let Ok(Some(f)) = mp.next_field().await {
         if f.name() == Some("file") {
@@ -325,10 +325,12 @@ pub async fn provenance(principal: AuthPrincipal, mut mp: Multipart) -> Response
     let Some(bytes) = file else {
         return task::invalid("file is required");
     };
-    let ours = crate::api::files::made_by_seat(&principal.agent.id, &bytes);
+    let ours = crate::api::files::made_by_seat(&bytes);
     let c2pa = has_c2pa(&bytes);
+    // A manifest's presence is reported, not verified: no signature check
+    // runs here, so "unverified", never "valid".
     let mut c = json!({"type": "c2pa", "outcome": if c2pa { "detected" } else { "not_detected" },
-        "validation_state": if c2pa { "valid" } else { "not_present" }});
+        "validation_state": if c2pa { "unverified" } else { "not_present" }});
     if let Some((model, at)) = ours {
         // Made here: this server is the issuer, whatever the file carries.
         c = json!({"type": "c2pa", "outcome": "detected", "validation_state": "trusted",

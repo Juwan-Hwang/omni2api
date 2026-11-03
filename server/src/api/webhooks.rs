@@ -127,8 +127,127 @@ fn types_of(b: &Value) -> Result<Vec<String>, Response> {
     Ok(out)
 }
 
-fn valid_url(u: &str) -> bool {
-    u.starts_with("https://") || u.starts_with("http://")
+/// Webhook targets point the server's own egress anywhere a caller names.
+/// Keep them out of the server's network: public http(s) hosts only, no
+/// credentials in the URL, no loopback/private/link-local/reserved IPs and
+/// no localhost names. The URL is parsed the WHATWG way, so the alternate
+/// IP spellings HTTP clients accept (decimal 2130706433, short 127.1, hex
+/// 0x7f.1, IPv4-mapped [::ffff:127.0.0.1]) normalize to the address they
+/// really mean and are rejected here. Names are checked at connect time
+/// too: `egress_client` resolves through `PublicDns`, which refuses any
+/// name whose answers include a blocked IP, so a public-looking hostname
+/// cannot point delivery inward. Delivery follows no redirects, so a
+/// public URL cannot 302 inward either.
+pub fn valid_url(u: &str) -> bool {
+    let Ok(url) = url::Url::parse(u) else {
+        return false;
+    };
+    if url.scheme() != "https" && url.scheme() != "http" {
+        return false;
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return false;
+    }
+    let Some(host) = url.host() else {
+        return false;
+    };
+    match host {
+        url::Host::Ipv4(ip) => !ipv4_blocked(&ip),
+        url::Host::Ipv6(ip) => !ipv6_blocked(&ip),
+        url::Host::Domain(d) => {
+            // A trailing root dot ("localhost.") names the same host.
+            let d = d.trim_end_matches('.');
+            !d.is_empty()
+                && d != "localhost"
+                && !d.ends_with(".localhost")
+                && !d.ends_with(".local")
+                && !d.ends_with(".internal")
+        }
+    }
+}
+
+/// An IPv4 no server egress may target: loopback, unspecified, link-local,
+/// RFC1918, the CGNAT block 100.64.0.0/10, multicast and reserved.
+pub fn ipv4_blocked(ip: &std::net::Ipv4Addr) -> bool {
+    let o = ip.octets();
+    ip.is_loopback()
+        || ip.is_unspecified()
+        || ip.is_link_local()
+        || o[0] == 0
+        || o[0] == 10
+        || (o[0] == 172 && (16..=31).contains(&o[1]))
+        || (o[0] == 192 && o[1] == 168)
+        || (o[0] == 169 && o[1] == 254)
+        || (o[0] == 100 && (64..=127).contains(&o[1]))
+        || o[0] >= 224
+}
+
+/// An IPv6 no server egress may target: loopback, unspecified, link-local,
+/// unique-local, any IPv4-mapped or IPv4-compatible form of a blocked IPv4
+/// ([::ffff:127.0.0.1] is 127.0.0.1), the well-known NAT64 prefix
+/// 64:ff9b::/96 judged by the IPv4 it embeds (RFC 6052), and the whole
+/// local-use NAT64 prefix 64:ff9b:1::/48 (RFC 8215), whose translation
+/// targets are site-defined.
+pub fn ipv6_blocked(ip: &std::net::Ipv6Addr) -> bool {
+    let seg = ip.segments();
+    if seg[0] == 0x64 && seg[1] == 0xff9b && seg[2] == 1 {
+        return true; // 64:ff9b:1::/48
+    }
+    if seg[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+        let o = ip.octets();
+        return ipv4_blocked(&std::net::Ipv4Addr::new(o[12], o[13], o[14], o[15]));
+    }
+    if let Some(v4) = ip.to_ipv4() {
+        return ipv4_blocked(&v4);
+    }
+    ip.is_loopback()
+        || ip.is_unspecified()
+        || seg[0] & 0xffc0 == 0xfe80 // link-local
+        || seg[0] & 0xfe00 == 0xfc00 // unique-local
+}
+
+/// Either stack.
+pub fn ip_blocked(ip: &std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => ipv4_blocked(v4),
+        std::net::IpAddr::V6(v6) => ipv6_blocked(v6),
+    }
+}
+
+/// DNS resolution for server egress: a name is refused when ANY address it
+/// resolves to is blocked. `valid_url` checks the literal; this checks the
+/// answer, closing the "public name that resolves inward" hole.
+#[derive(Debug)]
+struct PublicDns;
+
+impl reqwest::dns::Resolve for PublicDns {
+    fn resolve(&self, name: hyper::client::connect::dns::Name) -> reqwest::dns::Resolving {
+        Box::pin(async move {
+            let host = name.as_str().to_string();
+            let resolved: Result<Vec<std::net::SocketAddr>, _> =
+                tokio::net::lookup_host((host.as_str(), 0))
+                    .await
+                    .map(|it| it.collect());
+            let addrs: Vec<std::net::SocketAddr> = match resolved {
+                Ok(a) if !a.is_empty() => a,
+                Ok(_) => return Err(format!("no addresses for {host}").into()),
+                Err(e) => return Err(format!("cannot resolve {host}: {e}").into()),
+            };
+            if addrs.iter().any(|a| ip_blocked(&a.ip())) {
+                return Err(format!("{host} resolves to a private address").into());
+            }
+            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
+/// The client every server-egress call builds from: no redirects (a public
+/// target must not bounce delivery inward) and the blocking DNS resolver.
+/// Pair with `valid_url` on the URL itself.
+pub fn egress_client() -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .dns_resolver(std::sync::Arc::new(PublicDns))
 }
 
 /// The endpoint as shown; the secret stays in `history[0]`.
@@ -153,7 +272,7 @@ pub async fn create(principal: AuthPrincipal, Json(b): Json<Value>) -> Response 
         return err("name is required");
     };
     let Some(url) = b["url"].as_str().filter(|u| valid_url(u)) else {
-        return err("url must be an http(s) URL");
+        return err("url must be a public http(s) URL (no credentials, no loopback/private hosts)");
     };
     let id = format!("we_{}", uuid::Uuid::now_v7().simple());
     let secret = new_secret();
@@ -298,7 +417,11 @@ async fn deliver(url: &str, secrets: &[String], ev: &Value) -> Result<u16, Strin
         .map(|s| sign(s, &id, ts, &body))
         .collect::<Vec<_>>()
         .join(" ");
-    let r = reqwest::Client::new()
+    // No redirects and the blocking DNS resolver: a public target must not
+    // bounce or resolve delivery to an address valid_url would reject.
+    let r = egress_client()
+        .build()
+        .map_err(|e| e.to_string())?
         .post(url)
         .header("content-type", "application/json")
         .header("webhook-id", &id)
@@ -333,13 +456,19 @@ pub async fn test(
         return err(&format!("unknown event type {kind}"));
     }
     let url = s.obj["url"].as_str().unwrap_or("").to_string();
-    match deliver(&url, &secret_of(&s), &event(&kind, "test")).await {
-        Ok(code) if (200..300).contains(&code) => Json(json!({"object": "webhook_endpoint.test",
-            "event_type": kind, "status_code": code, "success": true, "webhook_endpoint_id": id}))
-        .into_response(),
-        Ok(code) => err(&format!("the endpoint answered {code}")),
-        Err(e) => err(&format!("the endpoint could not be reached: {e}")),
+    // Uniform failure: distinguishing "answered 401" from "connection
+    // refused" from "blocked address" would make /test a port/host oracle.
+    // Only a 2xx carries its status code; every failure is the same body.
+    let code = match deliver(&url, &secret_of(&s), &event(&kind, "test")).await {
+        Ok(code) if (200..300).contains(&code) => Some(code),
+        _ => None,
+    };
+    let mut out = json!({"object": "webhook_endpoint.test",
+        "event_type": kind, "success": code.is_some(), "webhook_endpoint_id": id});
+    if let Some(code) = code {
+        out["status_code"] = json!(code);
     }
+    Json(out).into_response()
 }
 
 /// The event a status change of a stored object is, if any.
@@ -440,6 +569,29 @@ mod tests {
             transition(&e("in_progress"), &e("completed")),
             Some("eval.run.succeeded")
         );
+    }
+
+    #[test]
+    fn nat64_embedded_ipv4_is_judged() {
+        let b = |s: &str| ipv6_blocked(&s.parse().unwrap());
+        // 64:ff9b::/96 carries the IPv4 in its last 32 bits.
+        assert!(b("64:ff9b::7f00:1")); // 127.0.0.1
+        assert!(b("64:ff9b::a9fe:a9fe")); // 169.254.169.254
+        assert!(b("64:ff9b::a00:1")); // 10.0.0.1
+        assert!(b("64:ff9b::c0a8:101")); // 192.168.1.1
+        assert!(b("64:ff9b::6440:1")); // 100.64.0.1 (CGNAT)
+        assert!(!b("64:ff9b::808:808")); // 8.8.8.8
+        assert!(!b("64:ff9b::5db8:d822")); // 93.184.216.34
+                                           // 64:ff9b:1::/48 is local-use NAT64: blocked whole.
+        assert!(b("64:ff9b:1::808:808"));
+        assert!(b("64:ff9b:1:ffff::1"));
+        // Just outside both prefixes.
+        assert!(!b("64:ff9b:2::808:808"));
+        assert!(!b("64:ff9a::7f00:1"));
+        // The literal URL check goes through the same predicate.
+        assert!(!valid_url("http://[64:ff9b::7f00:1]/"));
+        assert!(!valid_url("http://[64:ff9b:1::808:808]/"));
+        assert!(valid_url("http://[64:ff9b::808:808]/"));
     }
 
     #[test]

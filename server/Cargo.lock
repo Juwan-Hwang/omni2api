@@ -1499,6 +1499,7 @@ dependencies = [
  "dotenvy",
  "futures",
  "hex",
+ "hyper 0.14.32",
  "jsonwebtoken",
  "libc",
  "reqwest",
@@ -1516,6 +1517,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
 ]
 

@@ -30,15 +30,38 @@ use omni2api_server::model::identity::{
 };
 use omni2api_server::model::message::{Message, MessageStatus, MessageVisibility};
 
+/// The PG tests share one database and each wipes its tables
+/// (`clean_db`), so two running at once delete each other's rows. Every
+/// test holds this lock for its whole body: they run one at a time, while
+/// the rest of the suite stays parallel.
+static PG_SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// A store plus the serial lock, held until the test ends.
+struct PgTest {
+    _serial: tokio::sync::MutexGuard<'static, ()>,
+    store: PostgresStore,
+}
+
+impl std::ops::Deref for PgTest {
+    type Target = PostgresStore;
+    fn deref(&self) -> &PostgresStore {
+        &self.store
+    }
+}
+
 /// Skip tests if DATABASE_URL is not set or PostgreSQL is not available.
-async fn get_store() -> Option<PostgresStore> {
+async fn get_store() -> Option<PgTest> {
     let db_url = std::env::var("DATABASE_URL").ok()?;
+    let serial = PG_SERIAL.lock().await;
     match PostgresStore::new(&db_url).await {
         Ok(store) => {
             // Run migrations (creates tables + seeds demo data).
             // If migrations fail, the tables might already exist — that's OK.
             let _ = store.migrate().await;
-            Some(store)
+            Some(PgTest {
+                _serial: serial,
+                store,
+            })
         }
         Err(_) => None,
     }

@@ -224,6 +224,8 @@ omni2api/
 - [`docs/status-json.md`](docs/status-json.md) — the stable `--json` status contract, for embedding omni2api
 - [`docs/mcp.md`](docs/mcp.md) — sit in the seat over MCP (`oh-seat mcp`): registration for 8 tested hosts
 - `docs/DEVELOPMENT.md` — building and testing
+- [`docs/server-env.md`](docs/server-env.md) — server environment settings: public address and bounds
+- [`docs/openai-differences.md`](docs/openai-differences.md) — where the API departs from OpenAI on purpose
 - `docs/protocol.md`, `protocol/` — the wire specification
 
 ## Issues
